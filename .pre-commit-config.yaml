@@ -1,0 +1,47 @@
+# =============================================================================
+# Pre-commit hooks
+#
+# Se ejecutan automáticamente antes de cada `git commit`.
+# Si alguno falla, el commit se rechaza y se debe corregir.
+#
+# Instalación (se ejecuta con `make install`):
+#   pre-commit install
+#
+# Ejecución manual en todos los archivos:
+#   pre-commit run --all-files
+# =============================================================================
+
+repos:
+  # --- Hooks genéricos (YAML, JSON, trailing whitespace, etc.) ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      # Elimina espacios en blanco al final de las líneas
+      - id: trailing-whitespace
+      # Asegura que los archivos terminen con newline
+      - id: end-of-file-fixer
+      # Verifica que los archivos YAML son válidos
+      - id: check-yaml
+      # Previene commits accidentales de archivos grandes
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      # Previene commits a main/develop directamente
+      - id: no-commit-to-branch
+        args: ["--branch", "main", "--branch", "develop"]
+
+  # --- Ruff: linter + auto-fix ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      # Primero corrige automáticamente lo que pueda
+      - id: ruff
+        args: ["--fix"]
+      # Luego verifica formato (equivalente a black)
+      - id: ruff-format
+
+  # --- Black: formatter (redundante con ruff-format pero más maduro) ---
+  - repo: https://github.com/psf/black
+    rev: 24.4.0
+    hooks:
+      - id: black
+        language_version: python3.11

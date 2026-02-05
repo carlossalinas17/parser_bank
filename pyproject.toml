@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bank-statement-parser"
+version = "0.1.0"
+description = "Extractor y consolidador de estados de cuenta bancarios mexicanos"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+# --- Dependencias de producción ---
+# Cada dependencia tiene un comentario que explica POR QUÉ está aquí.
+dependencies = [
+    # Lectura de PDFs nativos (texto embebido). Es la librería principal
+    # que usan los 15 extractores actuales para PDFs no escaneados.
+    "pdfplumber>=0.10.0",
+
+    # DataFrames y escritura a Excel/CSV. Se usa en la capa de salida
+    # (adaptador OutputWriter) para generar los archivos consolidados.
+    "pandas>=2.1.0",
+
+    # Motor de escritura Excel con soporte de formato avanzado (anchos de
+    # columna, formato numérico, etc.). Lo usa el ExcelWriter adapter.
+    "xlsxwriter>=3.1.0",
+
+    # Motor alternativo de lectura/escritura Excel. Algunos extractores
+    # legacy lo usan; se mantiene para compatibilidad durante la migración.
+    "openpyxl>=3.1.0",
+]
+
+# --- Dependencias opcionales ---
+# Se instalan con: pip install -e ".[ocr]" o pip install -e ".[dev]"
+[project.optional-dependencies]
+# OCR: solo se necesita si se van a procesar PDFs escaneados o cifrados.
+# No todos los entornos tienen Tesseract instalado, por eso es opcional.
+ocr = [
+    "pytesseract>=0.3.10",
+    "pdf2image>=1.16.0",
+    "Pillow>=10.0.0",
+    "PyMuPDF>=1.23.0",
+]
+
+# Desarrollo: herramientas de lint, testing y type-checking.
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.4.0",
+    "black>=24.0.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+    "pandas-stubs>=2.1.0",
+]
+
+# --- Punto de entrada CLI ---
+# Permite ejecutar: bank-parser /ruta/carpeta -o /ruta/salida
+[project.scripts]
+bank-parser = "src.cli.main:main"
+
+# ============================================================
+# CONFIGURACIÓN DE HERRAMIENTAS
+# ============================================================
+
+# --- Ruff (linter + formatter rápido, reemplaza flake8/isort) ---
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# E: errores de estilo PEP8
+# F: errores de pyflakes (imports no usados, variables no definidas)
+# I: ordenamiento de imports (reemplaza isort)
+# UP: sugerencias de modernización de Python
+# SIM: simplificaciones de código
+select = ["E", "F", "I", "UP", "SIM"]
+
+# --- Black (formatter de código) ---
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+# --- Mypy (type-checker estático) ---
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+# Empezamos permisivo e iremos endureciendo conforme migramos
+disallow_untyped_defs = false
+
+# Pandas no tiene stubs completos; ignoramos sus errores de tipo
+[[tool.mypy.overrides]]
+module = "pdfplumber.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "xlsxwriter.*"
+ignore_missing_imports = true
+
+# --- Pytest ---
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -ra: muestra resumen de todos los tests que no pasaron
+# --strict-markers: falla si se usa un marker no registrado
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: tests que dependen de I/O real (PDFs, Excel)",
+    "integration: tests de integración entre componentes",
+]
+
+# --- Coverage ---
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+# Falla el CI si la cobertura baja de 80%
+fail_under = 80
+show_missing = true
+
+# --- Setuptools: le dice dónde encontrar el código ---
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

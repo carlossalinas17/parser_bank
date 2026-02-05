@@ -1,0 +1,85 @@
+# =============================================================================
+# CI — Integración Continua
+#
+# Se ejecuta automáticamente en cada Pull Request a main o develop.
+# Si falla, el PR queda bloqueado hasta que se corrija.
+#
+# Jobs:
+#   1. lint    → Verifica estilo (ruff), formato (black), tipos (mypy)
+#   2. test    → Ejecuta tests unitarios con cobertura mínima del 80%
+#
+# ¿Por qué jobs separados? Para que si solo falla el lint, no se pierda
+# tiempo ejecutando los tests. Feedback más rápido.
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  # También se ejecuta en push a develop para detectar roturas rápido
+  push:
+    branches: [develop]
+
+# Cancela ejecuciones anteriores del mismo PR si se hace un nuevo push
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: "🔍 Lint (ruff + black + mypy)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Cache de pip para no reinstalar cada vez
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
+
+      - name: Instalar herramientas de lint
+        run: pip install ruff black mypy pandas-stubs
+
+      - name: Ruff (linter)
+        run: ruff check src/ tests/
+
+      - name: Black (formato)
+        run: black --check src/ tests/
+
+      - name: Mypy (tipos)
+        run: mypy src/
+
+  test:
+    name: "🧪 Tests (pytest + coverage)"
+    runs-on: ubuntu-latest
+    # Los tests dependen de que el lint pase primero
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-test-${{ hashFiles('pyproject.toml') }}
+
+      - name: Instalar proyecto y dependencias
+        run: pip install -e ".[dev]"
+
+      - name: Ejecutar tests unitarios con cobertura
+        run: pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing -m "not integration"
+
+      # Upload de cobertura a Codecov (opcional, requiere configurar el token)
+      # - uses: codecov/codecov-action@v4
+      #   with:
+      #     file: coverage.xml
+      #     fail_ci_if_error: false
