@@ -115,7 +115,7 @@ omit = ["tests/*"]
 
 [tool.coverage.report]
 # Falla el CI si la cobertura baja de 80%
-fail_under = 50
+fail_under = 55
 show_missing = true
 
 # --- Setuptools: le dice dónde encontrar el código ---
