@@ -13,6 +13,7 @@ from src.domain.models.movimiento import Movimiento
 from src.domain.models.page_text import PageText
 from src.domain.models.resultado_parseo import ResultadoParseo
 from src.domain.models.resumen import Resumen
+from src.domain.models.word_info import WordInfo
 
 __all__ = [
     "InfoCuenta",
@@ -20,4 +21,5 @@ __all__ = [
     "PageText",
     "Resumen",
     "ResultadoParseo",
+    "WordInfo",
 ]
