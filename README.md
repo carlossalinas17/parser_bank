@@ -23,8 +23,8 @@ BBVA · Banorte · Citibanamex · Citi · Santander · Scotiabank · Monex · Sa
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/<tu-org>/bank-statement-parser.git
-cd bank-statement-parser
+git clone https://github.com/carlossalinas17/parser_bank.git
+cd parser_bank
 
 # Instalar en modo desarrollo (incluye herramientas de lint y test)
 make install
