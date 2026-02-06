@@ -9,9 +9,10 @@ La idea: simular las palabras que pdfplumber extraería de un PDF de BBVA
 y verificar que el parser las clasifica correctamente.
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
+
+import pytest
 
 from src.adapters.input.bank_parsers.bbva_parser import BBVAParser
 from src.domain.exceptions import ParseError
@@ -179,7 +180,11 @@ class TestBBVAParser:
         ]
         page = PageText(
             page_num=1,
-            text="BBVA\nNo. Cuenta: 0123456789\nPeriodo: 01 OCT 2024 AL 31 OCT 2024\n05/OCT SALDO INICIAL 120,000.00",
+            text=(
+                "BBVA\nNo. Cuenta: 0123456789\n"
+                "Periodo: 01 OCT 2024 AL 31 OCT 2024\n"
+                "05/OCT SALDO INICIAL 120,000.00"
+            ),
             words=words,
         )
         resultado = parser.parse([page], file_name="test.pdf")
