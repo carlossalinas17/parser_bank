@@ -9,6 +9,7 @@ build/
 # Virtual environments
 .venv/
 venv/
+parservenv/
 env/
 
 # IDE
@@ -35,7 +36,7 @@ tests/fixtures/pdfs/*.pdf
 tests/fixtures/pdfs/*.zip
 
 # Archivos de salida generados
-output/
+/output/
 *.xlsx
 *.csv
 

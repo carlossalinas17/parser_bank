@@ -461,8 +461,14 @@ class BBVAParser(BankParser):
     @staticmethod
     def _calcular_resumen(movimientos: list[Movimiento]) -> Resumen:
         """Calcula totales a partir de los movimientos extraídos."""
-        total_depositos = sum(m.deposito for m in movimientos if m.deposito > Decimal("0"))
-        total_retiros = sum(m.retiro for m in movimientos if m.retiro > Decimal("0"))
+        total_depositos = sum(
+            (m.deposito for m in movimientos if m.deposito > Decimal("0")),
+            Decimal("0"),
+        )
+        total_retiros = sum(
+            (m.retiro for m in movimientos if m.retiro > Decimal("0")),
+            Decimal("0"),
+        )
         num_depositos = sum(1 for m in movimientos if m.deposito > Decimal("0"))
         num_retiros = sum(1 for m in movimientos if m.retiro > Decimal("0"))
 

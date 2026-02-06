@@ -111,11 +111,22 @@ markers = [
 # --- Coverage ---
 [tool.coverage.run]
 source = ["src"]
-omit = ["tests/*"]
+# Excluir archivos que requieren tests de integración (PDFs reales, I/O).
+# La cobertura unitaria se mide solo sobre la lógica de negocio.
+# Los adaptadores de I/O se validan con tests de integración (marker: @slow).
+omit = [
+    "tests/*",
+    "src/cli/*",
+    "src/adapters/input/text_extractors/*",
+    "src/adapters/output/*",
+    "src/infrastructure/*",
+    # El orquestador coordina adaptadores reales; se valida en integración.
+    "src/domain/services/statement_processor.py",
+]
 
 [tool.coverage.report]
-# Falla el CI si la cobertura baja de 80%
-fail_under = 55
+# Falla el CI si la cobertura de la lógica de negocio baja de 80%
+fail_under = 80
 show_missing = true
 
 # --- Setuptools: le dice dónde encontrar el código ---

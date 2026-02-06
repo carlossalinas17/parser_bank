@@ -15,6 +15,7 @@ movimientos" es una regla del dominio. El CLI solo decide QUÉ archivos
 procesar y DÓNDE guardar los resultados.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from src.domain.exceptions import BancoNoIdentificadoError, ExtractionError, ParseError
@@ -35,7 +36,7 @@ class StatementProcessor:
 
     def __init__(
         self,
-        text_extractors: list[TextExtractor],
+        text_extractors: Sequence[TextExtractor],
         bank_identifier: BankIdentifier,
         parser_registry: BankParserRegistry,
         logger: ProcessLogger,
