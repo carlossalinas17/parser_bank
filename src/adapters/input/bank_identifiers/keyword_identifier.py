@@ -52,6 +52,10 @@ class KeywordBankIdentifier(BankIdentifier):
             [
                 "BANCO MERCANTIL DEL NORTE",
                 "BANORTE",
+                # Productos exclusivos de Banorte — algunos estados de cuenta
+                # NO dicen "BANORTE" en el encabezado, solo el nombre del producto.
+                "ENLACE GLOBAL",
+                "ENLACE NEGOCIOS",
             ],
         ),
         (
@@ -162,8 +166,16 @@ class KeywordBankIdentifier(BankIdentifier):
     def identify(self, text: str) -> str | None:
         """Identifica el banco buscando keywords en el texto.
 
-        La búsqueda es case-insensitive. Se evalúan los bancos en orden
-        y gana la primera coincidencia.
+        Estrategia de búsqueda en dos fases:
+        1. Primero busca en el ENCABEZADO (primeras 20 líneas).
+           Aquí siempre está el nombre institucional del banco.
+        2. Si no encuentra nada, busca en todo el texto.
+
+        ¿Por qué dos fases?
+        Porque los movimientos mencionan otros bancos ("TRANSFERENCIA A BBVA",
+        "PAGO SANTANDER", "SPEI BANAMEX") y si buscamos en todo el texto,
+        esas menciones pueden matchear antes que el banco correcto.
+        El encabezado es la fuente más confiable.
 
         Args:
             text: Texto de las primeras páginas del PDF.
@@ -171,6 +183,16 @@ class KeywordBankIdentifier(BankIdentifier):
         Returns:
             Nombre normalizado del banco (ej: "BBVA", "BANORTE") o None.
         """
+        # Fase 1: buscar solo en el encabezado (primeras 20 líneas)
+        lineas = text.split("\n")
+        encabezado = "\n".join(lineas[:20]).upper()
+
+        for bank_name, keywords in self._BANK_KEYWORDS:
+            for keyword in keywords:
+                if keyword.upper() in encabezado:
+                    return bank_name
+
+        # Fase 2: si no se encontró en el encabezado, buscar en todo el texto
         text_upper = text.upper()
 
         for bank_name, keywords in self._BANK_KEYWORDS:
