@@ -56,6 +56,7 @@ class KeywordBankIdentifier(BankIdentifier):
                 # NO dicen "BANORTE" en el encabezado, solo el nombre del producto.
                 "ENLACE GLOBAL",
                 "ENLACE NEGOCIOS",
+                "ENLACE DLLS",
             ],
         ),
         (
