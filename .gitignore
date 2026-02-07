@@ -42,3 +42,6 @@ tests/fixtures/pdfs/*.zip
 
 # Logs
 *.log
+
+# Carpetas de estados de cuentas
+/Data/
