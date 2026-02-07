@@ -82,6 +82,10 @@ def create_default_registry() -> BankParserRegistry:
 
     registry.register(BanorteParser())
 
+    from src.adapters.input.bank_parsers.santander_parser import SantanderParser
+
+    registry.register(SantanderParser())
+
     # Conforme se migren más bancos, se agregan aquí:
     # from src.adapters.input.bank_parsers.banorte_parser import BanorteParser
     # registry.register(BanorteParser())
