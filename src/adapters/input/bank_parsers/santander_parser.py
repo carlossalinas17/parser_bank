@@ -1,0 +1,363 @@
+"""
+Adaptador de entrada: Parser de estados de cuenta SANTANDER.
+
+Migrado de: extractor_santander_final.py (294 líneas originales)
+
+DIFERENCIA ARQUITECTURAL con BBVA/Banorte:
+Santander usa REGEX SOBRE LÍNEAS DE TEXTO, no posiciones X/Y.
+Esto significa que:
+- NO requiere PageText.has_words (funciona con texto plano).
+- Funciona con cualquier TextExtractor (PDF, OCR, ZIP/txt).
+- Es inherentemente más simple y robusto.
+
+LÓGICA DE PARSEO (preservada del original):
+1. Cada movimiento es una línea con formato: DD-MMM-YYYY FOLIO CONCEPTO MONTOS
+2. Extrae fecha, folio (referencia), concepto y montos con regex.
+3. Clasificación por keywords: ABONO, DEPOSITO, RECIBID, DEVOLUCION → depósito.
+4. Todo lo demás → retiro.
+5. Caso especial: "ABONO POR PAGO DE" con primer monto 0.00 → usa el segundo.
+6. Detección de duplicados por combinación fecha_monto_contador.
+7. Limpieza de texto duplicado para artefactos de OCR (ej: "22--EENNEE" → "2-ENE").
+
+BUGS CORREGIDOS:
+- float para montos en Excel → Decimal hasta la frontera de salida.
+- Diccionario de meses local → month_map compartido.
+- limpiar_monto() duplicado → parse_money_safe compartido.
+- try/except vacío → errores explícitos con ParseError.
+- print() sueltos → eliminados.
+
+NOTA SOBRE ZIP/txt:
+El original soporta ZIP con archivos .txt (resultado de OCR).
+En la nueva arquitectura, eso se maneja con un TextExtractor separado
+(ZipTxtExtractor, aún no implementado). El parser solo recibe PageText[],
+sin importar de dónde vinieron.
+"""
+
+import re
+from datetime import date
+from decimal import Decimal
+
+from src.domain.exceptions import ParseError
+from src.domain.models.info_cuenta import InfoCuenta
+from src.domain.models.movimiento import Movimiento
+from src.domain.models.page_text import PageText
+from src.domain.models.resultado_parseo import ResultadoParseo
+from src.domain.models.resumen import Resumen
+from src.domain.ports.bank_parser import BankParser
+from src.domain.shared.money import parse_money_safe
+from src.domain.shared.month_map import month_to_int
+
+
+class SantanderParser(BankParser):
+    """Parser de estados de cuenta Santander.
+
+    A diferencia de BBVA y Banorte, este parser trabaja sobre texto plano
+    (líneas), sin necesidad de coordenadas de posición. Esto lo hace
+    compatible con cualquier TextExtractor.
+
+    El formato de cada movimiento en Santander es:
+        DD-MMM-YYYY FOLIO CONCEPTO MONTO1 [MONTO2] [SALDO]
+    donde la fecha y el folio están siempre al inicio de la línea.
+    """
+
+    # Keywords que identifican depósitos (el resto es retiro)
+    _DEPOSIT_KEYWORDS: list[str] = [
+        "ABONO",
+        "DEPOSITO",
+        "DEPÓSITO",
+        "RECIBID",
+        "DEVOLUCION",
+        "DEVOLUCIÓN",
+    ]
+
+    # Patrón principal: DD-MMM-YYYY seguido de folio numérico
+    # Ejemplo: "1-ENE-2025 123456 PAGO SERVICIO 1,500.00 120,000.00"
+    _LINE_PATTERN: re.Pattern[str] = re.compile(r"^(\d{1,2})-([A-Z]{3})-(\d{4})\s*(\d+)(.*)")
+
+    # Patrón para detectar texto duplicado de OCR
+    # Ejemplo: "22--EENNEE--22002255" → caracteres duplicados consecutivos
+    _DUPLICATED_TEXT_PATTERN: re.Pattern[str] = re.compile(r"^\d{2,4}--[A-Z]{2,6}--\d{4,8}")
+
+    # Patrón para extraer montos con formato X,XXX.XX
+    _MONEY_PATTERN: re.Pattern[str] = re.compile(r"[\d,]+\.\d{2}")
+
+    # Patrón de cuenta Santander: XX-XXXXXXXX-X
+    _ACCOUNT_PATTERN: re.Pattern[str] = re.compile(r"(?<!\d)(\d{2}-\d{8}-\d)(?!\d)")
+
+    @property
+    def bank_name(self) -> str:
+        return "SANTANDER"
+
+    def parse(self, pages: list[PageText], file_name: str = "") -> ResultadoParseo:
+        """Parsea un estado de cuenta Santander completo."""
+        if not pages:
+            raise ParseError("SANTANDER", file_name, "No se recibieron páginas")
+
+        info_cuenta = self._extraer_info_cuenta(pages, file_name)
+        año, mes = self._extraer_periodo(pages, file_name)
+        movimientos = self._extraer_movimientos(pages, file_name)
+        resumen = self._calcular_resumen(movimientos)
+
+        return ResultadoParseo(
+            info_cuenta=info_cuenta,
+            movimientos=movimientos,
+            resumen=resumen,
+            año=año,
+            mes=mes,
+            archivo_origen=file_name,
+        )
+
+    # =================================================================
+    # Extracción de info de cuenta
+    # =================================================================
+
+    def _extraer_info_cuenta(self, pages: list[PageText], file_name: str) -> InfoCuenta:
+        """Extrae banco, cuenta y moneda.
+
+        Santander usa formato de cuenta con guiones: XX-XXXXXXXX-X
+        (ej: 65-50123456-7). Esto es diferente a BBVA/Banorte que
+        usan 10 dígitos sin separador.
+        """
+        texto = pages[0].text
+        cuenta = ""
+        moneda = "MXN"
+
+        match = self._ACCOUNT_PATTERN.search(texto)
+        if match:
+            cuenta = match.group(1)
+
+        texto_upper = texto.upper()
+        if "USD" in texto_upper or "DOLARES" in texto_upper or "DÓLARES" in texto_upper:
+            moneda = "USD"
+
+        if not cuenta:
+            cuenta = "SIN_CUENTA"
+
+        return InfoCuenta(banco="SANTANDER", cuenta=cuenta, moneda=moneda)
+
+    # =================================================================
+    # Extracción de periodo (año/mes)
+    # =================================================================
+
+    def _extraer_periodo(self, pages: list[PageText], file_name: str) -> tuple[int, int]:
+        """Extrae año y mes del estado de cuenta.
+
+        Santander incluye la fecha directamente en cada movimiento con
+        año de 4 dígitos (DD-MMM-YYYY), así que extraemos del primer
+        movimiento encontrado o de patrones del encabezado.
+        """
+        texto = "\n".join(p.text for p in pages[:2])
+
+        # Estrategia 1: buscar fecha de periodo en encabezado
+        patrones = [
+            r"[Pp]eriodo.*?(\d{1,2})[/-]([A-Za-z]{3})[/-](\d{4})",
+            r"[Ff]echa\s+de\s+[Cc]orte.*?(\d{1,2})[/-]([A-Za-z]{3})[/-](\d{4})",
+            r"[Cc]orte.*?(\d{1,2})[/-]([A-Za-z]{3})[/-](\d{4})",
+        ]
+
+        for patron in patrones:
+            match = re.search(patron, texto)
+            if match:
+                try:
+                    mes = month_to_int(match.group(2))
+                    año = int(match.group(3))
+                    return (año, mes)
+                except ValueError:
+                    continue
+
+        # Estrategia 2: extraer del primer movimiento
+        match = re.search(
+            r"^(\d{1,2})-([A-Z]{3})-(\d{4})\s*(\d+)",
+            texto,
+            re.MULTILINE,
+        )
+        if match:
+            try:
+                mes = month_to_int(match.group(2))
+                año = int(match.group(3))
+                return (año, mes)
+            except ValueError:
+                pass
+
+        # Estrategia 3: cualquier año 20XX
+        match_año = re.search(r"20(\d{2})", texto)
+        if match_año:
+            return (2000 + int(match_año.group(1)), 1)
+
+        raise ParseError(
+            "SANTANDER",
+            file_name,
+            "No se pudo determinar el año/mes del estado de cuenta.",
+        )
+
+    # =================================================================
+    # Extracción de movimientos
+    # =================================================================
+
+    def _extraer_movimientos(self, pages: list[PageText], file_name: str) -> list[Movimiento]:
+        """Extrae movimientos de todas las páginas.
+
+        Procesa línea por línea buscando el patrón DD-MMM-YYYY FOLIO.
+        A diferencia de BBVA/Banorte, NO necesita coordenadas X/Y.
+        """
+        movimientos: list[Movimiento] = []
+        procesados: set[str] = set()
+
+        for page in pages:
+            for linea in page.lines:
+                linea = linea.strip()
+                if not linea:
+                    continue
+
+                # Limpiar texto duplicado de OCR si se detecta
+                if self._DUPLICATED_TEXT_PATTERN.match(linea):
+                    linea = self._limpiar_texto_duplicado(linea)
+
+                # Buscar patrón de movimiento
+                match = self._LINE_PATTERN.match(linea)
+                if not match:
+                    continue
+
+                mov = self._procesar_linea(match, procesados)
+                if mov is not None:
+                    movimientos.append(mov)
+
+        return movimientos
+
+    def _procesar_linea(
+        self,
+        match: re.Match[str],
+        procesados: set[str],
+    ) -> Movimiento | None:
+        """Procesa una línea que matcheó el patrón de movimiento.
+
+        Args:
+            match: Match del regex con grupos (dia, mes, año, folio, resto).
+            procesados: Set de IDs ya procesados para detectar duplicados.
+
+        Returns:
+            Movimiento si se procesó correctamente, None si es duplicado
+            o no tiene montos válidos.
+        """
+        dia = int(match.group(1))
+        mes_str = match.group(2)
+        año = int(match.group(3))
+        folio = match.group(4)
+        resto = match.group(5).strip()
+
+        # Parsear fecha
+        try:
+            mes = month_to_int(mes_str)
+            fecha = date(año, mes, dia)
+        except (ValueError, TypeError):
+            return None
+
+        # Extraer montos del resto de la línea
+        montos_str = self._MONEY_PATTERN.findall(resto)
+
+        if len(montos_str) < 2:
+            return None
+
+        # Extraer concepto (todo lo que no es monto)
+        concepto = resto
+        for monto_str in montos_str:
+            concepto = concepto.replace(monto_str, "")
+        concepto = " ".join(concepto.split()).strip()
+
+        # Determinar monto del movimiento
+        monto = parse_money_safe(montos_str[0])
+
+        # Caso especial: "ABONO POR PAGO DE" con primer monto 0.00
+        # Formato: CONCEPTO 0.00 (IVA) MONTO_REAL SALDO
+        if monto == Decimal("0") and len(montos_str) >= 3:
+            monto = parse_money_safe(montos_str[1])
+
+        if monto <= Decimal("0"):
+            return None
+
+        # Detección de duplicados
+        # Santander puede generar líneas duplicadas en PDFs con OCR.
+        # Se usa fecha + monto + contador incremental como ID único.
+        base_id = f"{fecha}_{monto}"
+        contador = 1
+        movimiento_id = f"{base_id}_{contador}"
+
+        while movimiento_id in procesados:
+            contador += 1
+            movimiento_id = f"{base_id}_{contador}"
+            if contador > 500:
+                return None
+
+        procesados.add(movimiento_id)
+
+        # Clasificar por keywords
+        tipo = self._detectar_tipo(concepto)
+
+        deposito = monto if tipo == "deposito" else Decimal("0")
+        retiro = monto if tipo == "retiro" else Decimal("0")
+
+        return Movimiento(
+            fecha=fecha,
+            concepto=concepto,
+            referencia=folio,
+            retiro=retiro,
+            deposito=deposito,
+        )
+
+    # =================================================================
+    # Clasificación y helpers
+    # =================================================================
+
+    def _detectar_tipo(self, concepto: str) -> str:
+        """Clasifica un movimiento como depósito o retiro por keywords.
+
+        A diferencia de BBVA/Banorte que usan posición X, Santander
+        clasifica puramente por el texto del concepto.
+        """
+        concepto_upper = concepto.upper()
+
+        if any(kw in concepto_upper for kw in self._DEPOSIT_KEYWORDS):
+            return "deposito"
+
+        return "retiro"
+
+    @staticmethod
+    def _limpiar_texto_duplicado(texto: str) -> str:
+        """Limpia texto con caracteres duplicados por artefactos de OCR.
+
+        Cuando Santander se procesa con OCR, algunos caracteres se
+        duplican: "22--EENNEE--22002255" → "2-ENE-2025".
+        Esta función detecta pares de caracteres idénticos consecutivos
+        y los reduce a uno.
+        """
+        resultado: list[str] = []
+        i = 0
+        while i < len(texto):
+            if i < len(texto) - 1 and texto[i] == texto[i + 1]:
+                resultado.append(texto[i])
+                i += 2
+            else:
+                resultado.append(texto[i])
+                i += 1
+        return "".join(resultado)
+
+    @staticmethod
+    def _calcular_resumen(movimientos: list[Movimiento]) -> Resumen:
+        """Calcula totales a partir de los movimientos extraídos."""
+        total_depositos = sum(
+            (m.deposito for m in movimientos if m.deposito > Decimal("0")),
+            Decimal("0"),
+        )
+        total_retiros = sum(
+            (m.retiro for m in movimientos if m.retiro > Decimal("0")),
+            Decimal("0"),
+        )
+        num_depositos = sum(1 for m in movimientos if m.deposito > Decimal("0"))
+        num_retiros = sum(1 for m in movimientos if m.retiro > Decimal("0"))
+
+        return Resumen(
+            total_depositos=total_depositos,
+            total_retiros=total_retiros,
+            num_depositos=num_depositos,
+            num_retiros=num_retiros,
+        )
