@@ -78,6 +78,20 @@ class KeywordBankIdentifier(BankIdentifier):
             ],
         ),
         (
+            "HSBC",
+            [
+                "HSBC MEXICO",
+                "HSBC MÉXICO",
+                "HSBC",
+                # Los PDFs de HSBC México usan un font CID personalizado
+                # (similar a EBCDIC CP500) que produce tokens "(cid:NNN)"
+                # cuando pdfplumber extrae el texto. Ningún otro banco usa
+                # este encoding, así que la presencia de "(cid:" es un
+                # identificador confiable y único de HSBC.
+                "(cid:",
+            ],
+        ),
+        (
             "SANTANDER",
             [
                 "SANTANDER",
