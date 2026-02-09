@@ -94,6 +94,10 @@ def create_default_registry() -> BankParserRegistry:
 
     registry.register(VantageBankParser())
 
+    from src.adapters.input.bank_parsers.hsbc_parser import HsbcParser
+
+    registry.register(HsbcParser())
+
     # Conforme se migren más bancos, se agregan aquí:
     # from src.adapters.input.bank_parsers.banorte_parser import BanorteParser
     # registry.register(BanorteParser())
