@@ -270,8 +270,25 @@ class ScotiabankParser(BankParser):
                     i += 1
                     continue
 
-                # Recopilar concepto multi-línea
+                # Recopilar concepto multi-línea.
+                #
+                # BUG CORREGIDO: antes se paraba cuando el texto acumulado
+                # tenía 2+ montos ($X,XXX.XX). Pero si la línea de fecha
+                # ya tiene los montos (que es lo más común en Scotiabank),
+                # el check se disparaba en la primera iteración y solo
+                # capturaba 1 línea de continuación. Ejemplo:
+                #
+                #   30 ABR COBRO DE COMISION $300.00 $50,000.00  ← 2 montos
+                #          SCOTIA EN LINEA                       ← 1 continuación
+                #          ANUALIDAD                             ← PERDIDA
+                #          NUM OP 000000001                      ← PERDIDA
+                #
+                # FIX: contar los montos de la línea de fecha como "base"
+                # y solo parar cuando una línea de CONTINUACIÓN tenga
+                # montos propios. Así se recogen todas las líneas de texto
+                # puro (SCOTIA EN LINEA, ANUALIDAD, NUM OP, etc.).
                 concepto_lines = [linea]
+                montos_en_fecha = len(self._MONEY_PATTERN.findall(linea))
                 j = i + 1
                 lineas_agregadas = 0
 
@@ -295,10 +312,20 @@ class ScotiabankParser(BankParser):
                     lineas_agregadas += 1
                     j += 1
 
-                    # Si ya tenemos 2+ montos, probablemente es suficiente
-                    texto_acumulado = " ".join(concepto_lines)
-                    if len(self._MONEY_PATTERN.findall(texto_acumulado)) >= 2:
+                    # Si esta línea de continuación tiene montos propios ($),
+                    # probablemente es la última línea del movimiento
+                    # (layout donde el monto va al final de la descripción).
+                    # La incluimos y luego paramos.
+                    if self._MONEY_PATTERN.search(siguiente):
                         break
+
+                    # Si la línea de fecha NO tenía montos, verificar si
+                    # el texto acumulado ya tiene 2+ montos (layout donde
+                    # los montos están distribuidos entre continuaciones).
+                    if montos_en_fecha == 0:
+                        texto_acum = " ".join(concepto_lines)
+                        if len(self._MONEY_PATTERN.findall(texto_acum)) >= 2:
+                            break
 
                 # Procesar el movimiento con las líneas recopiladas
                 mov = self._procesar_movimiento(fecha, concepto_lines)
@@ -341,8 +368,23 @@ class ScotiabankParser(BankParser):
         # Determinar monto del movimiento
         primer_monto = montos_validos[0]
 
-        # Clasificar por keywords
-        tipo = self._detectar_tipo(concepto)
+        # Clasificar por keywords usando SOLO la primera línea.
+        #
+        # ¿Por qué no el concepto completo? Porque las líneas de
+        # continuación contienen datos del remitente, clave de rastreo,
+        # RFC, y frecuentemente la palabra "PAGO" en frases como
+        # "CONCEPTO PAGO FACTURA 910047". Si clasificamos con el texto
+        # completo, "PAGO" (keyword de retiro) matchea antes que
+        # "TRANSF INTERBANCARIA SPEI" (keyword de depósito) y un
+        # depósito SPEI se clasifica incorrectamente como retiro.
+        #
+        # La acción principal del movimiento (COBRO, ABONO, TRANSF,
+        # DEPOSITO, etc.) siempre está en la primera línea. Las
+        # continuaciones son datos complementarios que no definen
+        # la dirección del movimiento.
+        primera_linea = lineas_concepto[0] if lineas_concepto else ""
+        concepto_primera = re.sub(r"^\d{2}\s+[A-Z]{3}\s+", "", primera_linea).strip()
+        tipo = self._detectar_tipo(concepto_primera)
 
         deposito = primer_monto if tipo == "deposito" else Decimal("0")
         retiro = primer_monto if tipo == "retiro" else Decimal("0")
