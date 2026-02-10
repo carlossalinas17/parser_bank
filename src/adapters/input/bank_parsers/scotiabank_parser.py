@@ -732,7 +732,11 @@ class ScotiabankParser(BankParser):
                 # Parsear fecha
                 fecha = self._parsear_fecha(match_fecha, año)
                 if fecha is None:
+<<<<<<< HEAD
                     print("  ERROR: No se pudo parsear fecha")
+=======
+                    print(f"  ERROR: No se pudo parsear fecha")
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
                     i += 1
                     continue
 
@@ -770,8 +774,14 @@ class ScotiabankParser(BankParser):
                     texto_acumulado = " ".join(concepto_lines)
                     montos_encontrados = self._MONEY_PATTERN.findall(texto_acumulado)
                     if len(montos_encontrados) >= 2:
+<<<<<<< HEAD
                         mensaje = f"  Se encontraron {len(montos_encontrados)} montos, deteniendo"
                         print(mensaje)
+=======
+                        print(
+                            f"  Se encontraron {len(montos_encontrados)} montos, deteniendo acumulación"
+                        )
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
                         break
 
                 print(f"  Total líneas acumuladas: {len(concepto_lines)}")
@@ -780,6 +790,7 @@ class ScotiabankParser(BankParser):
                 mov = self._procesar_movimiento(fecha, concepto_lines)
                 if mov is not None:
                     movimientos.append(mov)
+<<<<<<< HEAD
                     print("  Movimiento agregado exitosamente")
                 else:
                     print("  ERROR: No se pudo procesar movimiento")
@@ -788,6 +799,16 @@ class ScotiabankParser(BankParser):
 
         print("\n" + "=" * 80)
         print("PROCESAMIENTO COMPLETADO")
+=======
+                    print(f"  Movimiento agregado exitosamente")
+                else:
+                    print(f"  ERROR: No se pudo procesar movimiento")
+
+                i = j
+
+        print(f"\n" + "=" * 80)
+        print(f"PROCESAMIENTO COMPLETADO")
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
         print(f"Total movimientos extraídos: {len(movimientos)}")
         print("=" * 80)
 
@@ -811,7 +832,11 @@ class ScotiabankParser(BankParser):
         """
         texto_completo = " ".join(lineas_concepto)
 
+<<<<<<< HEAD
         print("\n[DEBUG] Procesando movimiento:")
+=======
+        print(f"\n[DEBUG] Procesando movimiento:")
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
         print(f"  Fecha: {fecha}")
         print(f"  Líneas concepto ({len(lineas_concepto)}):")
         for i, linea in enumerate(lineas_concepto):
@@ -901,7 +926,11 @@ class ScotiabankParser(BankParser):
 
         # Caso especial: traspasos entre cuentas propias → retiro por default
         if "SEL TRASPASO ENTRE CUENTAS" in concepto_upper:
+<<<<<<< HEAD
             print("    Caso especial: SEL TRASPASO ENTRE CUENTAS → retiro")
+=======
+            print(f"    Caso especial: SEL TRASPASO ENTRE CUENTAS → retiro")
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
             return "retiro"
 
         # Evaluar retiros PRIMERO (tienen prioridad)
@@ -917,7 +946,11 @@ class ScotiabankParser(BankParser):
                 return "deposito"
 
         # Default: retiro
+<<<<<<< HEAD
         print("    No se encontraron keywords, default → retiro")
+=======
+        print(f"    No se encontraron keywords, default → retiro")
+>>>>>>> 452e59fc237361a08aa5bb4f8d840d0964cd0bd8
         return "retiro"
 
     # =================================================================
