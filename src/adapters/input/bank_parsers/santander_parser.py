@@ -74,10 +74,6 @@ class SantanderParser(BankParser):
     # Ejemplo: "1-ENE-2025 123456 PAGO SERVICIO 1,500.00 120,000.00"
     _LINE_PATTERN: re.Pattern[str] = re.compile(r"^(\d{1,2})-([A-Z]{3})-(\d{4})\s*(\d+)(.*)")
 
-    # Patrón para detectar texto duplicado de OCR
-    # Ejemplo: "22--EENNEE--22002255" → caracteres duplicados consecutivos
-    _DUPLICATED_TEXT_PATTERN: re.Pattern[str] = re.compile(r"^\d{2,4}--[A-Z]{2,6}--\d{4,8}")
-
     # Patrón para extraer montos con formato X,XXX.XX
     _MONEY_PATTERN: re.Pattern[str] = re.compile(r"[\d,]+\.\d{2}")
 
@@ -88,9 +84,19 @@ class SantanderParser(BankParser):
     # Son ruido de encabezados, pies de página o separadores que
     # podrían aparecer entre movimientos en el PDF.
     _NOISE_PATTERNS: list[re.Pattern[str]] = [
-        re.compile(r"^[Pp][áa]gina\s+\d+", re.IGNORECASE),
+        re.compile(r"^[Pp][áa]gina\s*\d+", re.IGNORECASE),
+        # Santander omite acentos en algunos PDFs: "Pgina 2 de 16"
+        re.compile(r"^Pgina\s*\d+", re.IGNORECASE),
         re.compile(r"^\s*-{3,}\s*$"),  # líneas de separación "---"
         re.compile(r"^\d+\s*$"),  # líneas que son solo un número
+        # Footer de Santander: "P-P 4500671"
+        re.compile(r"^P-P\s+\d+"),
+        # Headers de tabla que se repiten en cada página
+        re.compile(r"^FECHA\s+FOLIO\s+DESCRIPCION"),
+        re.compile(r"^ESTADO DE CUENTA"),
+        re.compile(r"^Banco Santander"),
+        re.compile(r"^Institucin|^Grupo Financiero"),
+        re.compile(r"^PRADERAS|^PERIODO DEL|^CODIGO DE CLIENTE"),
     ]
 
     @property
@@ -242,8 +248,15 @@ class SantanderParser(BankParser):
                 if not linea:
                     continue
 
-                # Limpiar texto duplicado de OCR si se detecta
-                if self._DUPLICATED_TEXT_PATTERN.match(linea):
+                # Limpiar texto duplicado de OCR si se detecta.
+                # El PDF de Santander tiene doble capa de texto superpuesto:
+                # cada carácter aparece dos veces consecutivas.
+                # Ejemplo: "RREECCIIBBIIDDOO DDEE BBBBVVAA" → "RECIBIDO DE BBVA"
+                # Esto afecta TANTO líneas de fecha como líneas de continuación,
+                # por eso se aplica a TODA línea al inicio del loop.
+                # Además, al limpiar líneas de fecha doubled, se convierten en
+                # idénticas a las clean → el sistema de duplicados las descarta.
+                if self._es_texto_duplicado(linea):
                     linea = self._limpiar_texto_duplicado(linea)
 
                 # ¿Es inicio de un nuevo movimiento?
@@ -403,6 +416,53 @@ class SantanderParser(BankParser):
             return "deposito"
 
         return "retiro"
+
+    @staticmethod
+    def _es_texto_duplicado(texto: str) -> bool:
+        """Detecta si una línea tiene caracteres duplicados por capa de texto superpuesto.
+
+        El PDF de Santander coloca dos capas de texto idénticas ligeramente
+        desplazadas. Cuando pdfplumber extrae el texto, los caracteres se
+        intercalan: "RECIBIDO" → "RREECCIIBBIIDDOO".
+
+        La detección funciona así:
+        1. Toma los primeros N caracteres alfanuméricos de la línea.
+        2. Cuenta cuántos forman pares consecutivos idénticos (posiciones 0-1, 2-3, etc.).
+        3. Si más del 70% son pares → la línea está duplicada.
+
+        ¿Por qué 70% y no 100%? Porque algunas líneas tienen mezcla de
+        texto duplicado y separadores (espacios, guiones) que no siempre
+        se duplican perfectamente. 70% es suficientemente alto para evitar
+        falsos positivos en texto normal.
+
+        ¿Por qué solo alfanuméricos? Los espacios y puntuación pueden
+        tener comportamientos irregulares en la extracción de texto.
+        Los caracteres alfanuméricos son el indicador más fiable.
+
+        Args:
+            texto: Línea de texto a evaluar.
+
+        Returns:
+            True si la línea parece tener caracteres duplicados.
+        """
+        # Extraer solo caracteres alfanuméricos para la evaluación
+        alnum = [c for c in texto if c.isalnum()]
+
+        # Necesitamos al menos 6 caracteres alfanuméricos para evaluar
+        # (3 pares mínimo). Con menos, el riesgo de falso positivo es alto.
+        if len(alnum) < 6:
+            return False
+
+        # Evaluar los primeros 20 caracteres alfanuméricos (10 pares).
+        # No necesitamos revisar toda la línea; si los primeros 10 pares
+        # están duplicados, el resto también lo estará.
+        muestra = alnum[: min(len(alnum), 20)]
+        pares_totales = len(muestra) // 2
+        pares_iguales = sum(
+            1 for i in range(0, pares_totales * 2, 2) if muestra[i] == muestra[i + 1]
+        )
+
+        return pares_totales > 0 and pares_iguales / pares_totales > 0.7
 
     @staticmethod
     def _limpiar_texto_duplicado(texto: str) -> str:
