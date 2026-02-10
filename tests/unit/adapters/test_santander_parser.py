@@ -625,3 +625,344 @@ class TestSantanderMultilineDescriptions:
 
         # Mov 7: Enlace traspaso
         assert resultado.movimientos[6].deposito == Decimal("6300000.00")
+
+
+class TestSantanderDoubledTextCleaning:
+    """Tests para limpieza de texto duplicado en líneas de continuación.
+
+    El PDF de Santander tiene doble capa de texto superpuesto: cuando
+    pdfplumber extrae el texto, cada carácter aparece dos veces consecutivas.
+    Ejemplo: "RECIBIDO DE BBVA" → "RREECCIIBBIIDDOO DDEE BBBBVVAA"
+
+    Este fenómeno afecta:
+    - Líneas de fecha (movimientos): "0022--JJUUNN--22002255 ..."
+    - Líneas de continuación: "RREECCIIBBIIDDOO DDEE BBAAJJIIOO"
+    - Encabezados: "FFEECCHHAA FFOOLLIIOO DDEESSCCRRIIPPCCIIOONN"
+
+    La limpieza debe aplicarse a TODA línea doubled, no solo a las de fecha.
+    """
+
+    @pytest.fixture
+    def parser(self):
+        return SantanderParser()
+
+    def _make_page(
+        self,
+        movimiento_lines: list[str] | None = None,
+        header: str | None = None,
+    ) -> PageText:
+        if header is None:
+            header = (
+                "Santander\n"
+                "Estado de Cuenta\n"
+                "Cuenta: 65-50123456-7\n"
+                "Periodo del 01-Jun-2025 al 30-Jun-2025\n"
+                "Moneda: MXN\n"
+            )
+        if movimiento_lines is None:
+            movimiento_lines = []
+        text = header + "\n" + "\n".join(movimiento_lines)
+        return PageText(page_num=1, text=text)
+
+    # === Tests de detección ===
+
+    def test_detecta_texto_duplicado_continuacion(self, parser):
+        """Detecta texto doubled en líneas de continuación (sin fecha).
+
+        Las líneas de continuación como "RREECCIIBBIIDDOO DDEE BBBBVVAA"
+        tienen cada carácter alfanumérico duplicado. La detección evalúa
+        los primeros 20 caracteres alfanuméricos: si >70% forman pares
+        idénticos, la línea está duplicada.
+        """
+        _d = SantanderParser._es_texto_duplicado
+        assert _d("RREECCIIBBIIDDOO DDEE BBBBVVAA MMEEXXIICCOO")
+        assert _d("DDEE LLAA CCUUEENNTTAA 001122558800000011220011883333885555")
+        assert _d("DDEELL CCLLIIEENNTTEE BBRRAANNGGUUSS SSEELLEECCTTOO")
+        assert _d("CCLLAAVVEE DDEE RRAASSTTRREEOO BBNNEETT0011000022550066")
+        assert _d("RRFFCC BBSSNN222211110077RRAA11")
+
+    def test_no_detecta_texto_normal_como_duplicado(self, parser):
+        """Texto normal NO se detecta como duplicado.
+
+        Palabras como "COFFEE" o "LLAMA" tienen letras repetidas
+        naturalmente, pero no en el patrón par-a-par que genera
+        la doble capa de Santander. La detección mira la distribución
+        estadística, no letras individuales.
+        """
+        assert not SantanderParser._es_texto_duplicado("RECIBIDO DE BBVA MEXICO")
+        assert not SantanderParser._es_texto_duplicado("DEL CLIENTE CUEROS ORION SA DE CV")
+        assert not SantanderParser._es_texto_duplicado("RFC BSN221107RA1")
+        assert not SantanderParser._es_texto_duplicado("COFFEE SHOP")
+        assert not SantanderParser._es_texto_duplicado("LLAMA GREETINGS")
+
+    def test_no_detecta_texto_corto(self, parser):
+        """Textos muy cortos (< 6 alfanuméricos) no se evalúan.
+
+        Con pocos caracteres el riesgo de falso positivo es alto.
+        Ejemplo: "AA" tiene 100% pares iguales pero es solo coincidencia.
+        """
+        assert not SantanderParser._es_texto_duplicado("AA")
+        assert not SantanderParser._es_texto_duplicado("Hi")
+        assert not SantanderParser._es_texto_duplicado("")
+
+    def test_detecta_linea_fecha_duplicada(self, parser):
+        """Líneas de fecha doubled también se detectan correctamente.
+
+        El viejo _DUPLICATED_TEXT_PATTERN solo buscaba "\\d{2,4}--[A-Z]{2,6}--".
+        El nuevo _es_texto_duplicado es más general y cubre tanto fechas
+        como cualquier otra línea.
+        """
+        assert SantanderParser._es_texto_duplicado(
+            "0022--JJUUNN--22002255 55554422773366AABBOONNOO TTRRAANNSSFFEERREENNCCIIAA SSPPEEII"
+        )
+
+    # === Tests de limpieza en continuación ===
+
+    def test_continuacion_doubled_se_limpia_en_concepto(self, parser):
+        """Líneas de continuación doubled se limpian antes de unirse al concepto.
+
+        Este es el bug exacto que reportó el usuario: las líneas de
+        continuación como "RREECCIIBBIIDDOO DDEE BBBBVVAA MMEEXXIICCOO"
+        aparecían textualmente en el concepto en vez de "RECIBIDO DE BBVA MEXICO".
+
+        La limpieza se aplica al inicio del loop sobre cada línea,
+        ANTES de decidir si es continuación o movimiento nuevo.
+        """
+        page = self._make_page(
+            [
+                "2-JUN-2025 5542736 ABONO TRANSFERENCIA SPEI HORA 09:53:48 459,529.60 519,801.39",
+                "RREECCIIBBIIDDOO DDEE BBBBVVAA MMEEXXIICCOO",
+                "DDEE LLAA CCUUEENNTTAA" " 001122558800000011220011883333885555",
+                "DDEELL CCLLIIEENNTTEE BBRRAANNGGUUSS"
+                " SSEELLEECCTTOO DDEELL NNOORRTTEE SSAA DDEE CCVV",
+                "CCLLAAVVEE DDEE RRAASSTTRREEOO"
+                " BBNNEETT0011000022550066002200004499112266333300",
+                "RREEFF 00000022000044",
+                "CCOONNCCEEPPTTOO FFAACC 991100004477449955",
+                "RRFFCC BBSSNN222211110077RRAA11",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+
+        # Verificar que el concepto tiene texto LIMPIO, no doubled
+        assert "RECIBIDO DE BBVA MEXICO" in mov.concepto
+        assert "DE LA CUENTA 012580001201833855" in mov.concepto
+        assert "DEL CLIENTE BRANGUS SELECTO DEL NORTE SA DE CV" in mov.concepto
+        assert "CLAVE DE RASTREO BNET01002506020049126330" in mov.concepto
+        assert "REF 0002004" in mov.concepto
+        assert "CONCEPTO FAC 910047495" in mov.concepto
+        assert "RFC BSN221107RA1" in mov.concepto
+
+        # Verificar que NO tiene texto doubled
+        assert "RREECCIIBBIIDDOO" not in mov.concepto
+        assert "BBBBVVAA" not in mov.concepto
+        assert "BBSSNN" not in mov.concepto
+
+    def test_segundo_ejemplo_banregio_doubled(self, parser):
+        """Segundo ejemplo del reporte del usuario: SPEI de Banregio.
+
+        "RREECCIIBBIIDDOO DDEE BBAANNRREEGGIIOO" debe limpiarse a
+        "RECIBIDO DE BANREGIO".
+        """
+        page = self._make_page(
+            [
+                "2-JUN-2025 9539556 ABONO TRANSFERENCIA SPEI HORA 13:49:12 132,161.47 3,560,623.99",
+                "RREECCIIBBIIDDOO DDEE BBAANNRREEGGIIOO",
+                "DDEE LLAA CCUUEENNTTAA 005588558800330000336611330000112299",
+                "DDEELL CCLLIIEENNTTEE GGAALLAA BBEEEEFF AALLIIMMEENNTTOOSS SS..AA.. DDEE CC..VV..",
+                "CCLLAAVVEE DDEE RRAASSTTRREEOO"
+                " 005588--0022//0066//22002255//0022--003300QQCCXXZZ668855",
+                "RREEFF 665544009944",
+                "CCOONNCCEEPPTTOO BB00991100004477440000 GGAALLAA BBEEEEFF AALLIIMMEENNTTOOSS",
+                "RRFFCC GGBBAA114411001166CCLL77",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+
+        assert "RECIBIDO DE BANREGIO" in mov.concepto
+        assert "DE LA CUENTA 058580300361300129" in mov.concepto
+        assert "DEL CLIENTE GALA BEEF ALIMENTOS S.A. DE C.V." in mov.concepto
+        assert "058-02/06/2025/02-030QCXZ685" in mov.concepto
+        assert "REF 654094" in mov.concepto
+        assert "RFC GBA141016CL7" in mov.concepto
+
+        # Sin texto doubled
+        assert "RREECCIIBBIIDDOO" not in mov.concepto
+        assert "BBAANNRREEGGIIOO" not in mov.concepto
+
+    def test_mezcla_lineas_clean_y_doubled(self, parser):
+        """Movimiento clean seguido por continuación doubled, o viceversa.
+
+        En el PDF real, algunas líneas son clean y otras doubled.
+        Ambas deben procesarse correctamente.
+        """
+        page = self._make_page(
+            [
+                # Movimiento 1: línea de fecha CLEAN + continuación DOUBLED
+                "2-JUN-2025 9063704 ABONO TRANSFERENCIA SPEI HORA 12:15:24 59,114.83 3,410,152.50",
+                "RECIBIDO DE BBVA MEXICO",  # clean
+                "DDEE LLAA CCUUEENNTTAA 001122558800000011995511332277111166",  # doubled
+                "DEL CLIENTE EPIFANIO AGUAYO ZAPATA",  # clean
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+
+        # Tanto las clean como las doubled están correctas
+        assert "RECIBIDO DE BBVA MEXICO" in mov.concepto
+        assert "DE LA CUENTA 012580001951327116" in mov.concepto  # cleaned
+        assert "DEL CLIENTE EPIFANIO AGUAYO ZAPATA" in mov.concepto
+
+    def test_linea_fecha_doubled_se_limpia_y_parsea(self, parser):
+        """Línea de fecha doubled se limpia y se procesa como movimiento.
+
+        Líneas como "0022--JJUUNN--22002255 22550000001111DDEEPPOOSSIITTOO..."
+        se limpian a "02-JUN-2025 2500011DEPOSITO..." y luego matchean
+        el _LINE_PATTERN normalmente.
+
+        Nota: en el PDF real, el monto de la línea doubled suele estar
+        truncado, así que muchas veces _procesar_linea retorna None
+        por no tener 2 montos válidos. Esto es comportamiento esperado.
+        """
+        page = self._make_page(
+            [
+                # Versión doubled con montos completos (caso ideal para test)
+                "0022--JJUUNN--22002255 2255000000"
+                "1111DDEEPPOOSSIITTOO EENN EEFFEECCTTII"
+                "VVOO 2200..0000 551199,,882211..3399",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+        assert mov.deposito == Decimal("20.00")
+        assert "DEPOSITO EN EFECTIVO" in mov.concepto
+
+    def test_doubled_y_clean_misma_fecha_monto_genera_dos(self, parser):
+        """Si ambas capas tienen montos completos, se generan 2 movimientos.
+
+        El sistema de duplicados usa fecha+monto+contador, así que dos
+        líneas con misma fecha y monto (una clean y una cleaned-from-doubled)
+        generan movimientos separados. Esto es esperado: en el PDF real
+        la capa doubled suele tener montos truncados, así que en la
+        práctica solo se genera uno.
+        """
+        page = self._make_page(
+            [
+                "2-JUN-2025 2500011 DEPOSITO EN EFECTIVO 20.00 519,821.39",
+                "0022--JJUUNN--22002255 2255000000"
+                "1111DDEEPPOOSSIITTOO EENN EEFFEECCTTII"
+                "VVOO 2200..0000 551199,,882211..3399",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        # Ambas generan movimiento porque tienen montos completos
+        # y el dedup permite repeticiones con contador incremental
+        assert len(resultado.movimientos) == 2
+
+    def test_doubled_con_monto_truncado_no_genera_movimiento(self, parser):
+        """Línea doubled con monto truncado NO genera movimiento.
+
+        En el PDF real, la capa doubled frecuentemente tiene montos
+        cortados: "445599,,5555" que limpio queda "459,55" (sin .XX final).
+        El regex _MONEY_PATTERN exige \\d{2} al final, así que "459,55"
+        no matchea como monto válido → menos de 2 montos → None.
+        """
+        page = self._make_page(
+            [
+                # Versión clean (monto completo)
+                "2-JUN-2025 5542736 ABONO TRANSFERENCIA SPEI 459,529.60 519,801.39",
+                # Versión doubled con monto truncado (como en el PDF real)
+                "0022--JJUUNN--22002255 5555442277"
+                "3366AABBOONNOO TTRRAANNSSFFEERREENNCC"
+                "IIAA SSPPEEII 445599,,55",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        # Solo la versión clean genera movimiento
+        assert len(resultado.movimientos) == 1
+        assert resultado.movimientos[0].deposito == Decimal("459529.60")
+
+    def test_ruido_doubled_no_es_continuacion(self, parser):
+        """Headers de tabla doubled se filtran como ruido tras limpieza.
+
+        "FFEECCHHAA FFOOLLIIOO DDEESSCCRRIIPPCCIIOONN" se limpia a
+        "FECHA FOLIO DESCRIPCION" que matchea el noise pattern de headers.
+        No debe aparecer como continuación de ningún movimiento.
+        """
+        page = self._make_page(
+            [
+                "2-JUN-2025 5542736 ABONO SPEI 459,529.60 519,801.39",
+                "FFEECCHHAA FFOOLLIIOO DDEESSCCRRIIPPCCIIOONN"
+                " DDEEPPOOSSIITTOO RREETTIIRROO SSAALLDDOO",
+                "RECIBIDO DE BAJIO",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+
+        # La continuación válida sí se incluye
+        assert "RECIBIDO DE BAJIO" in mov.concepto
+        # El header de tabla NO se incluye
+        assert "FOLIO" not in mov.concepto
+        assert "DESCRIPCION" not in mov.concepto
+
+    def test_escenario_pdf_real_intercalado(self, parser):
+        """Simula la estructura real del PDF: clean + doubled intercalados.
+
+        En el PDF de Santander, los movimientos aparecen así:
+        1. Línea de fecha doubled (montos truncados) → descartada
+        2. Continuación doubled × N
+        3. Línea de fecha clean (montos completos) → movimiento real
+        4. Continuación clean × N (cuando las hay)
+
+        El parser debe:
+        - Generar movimientos solo de las líneas clean
+        - Limpiar continuaciones doubled que queden adjuntas a movimientos clean
+        - Ignorar líneas doubled con montos truncados
+        """
+        page = self._make_page(
+            [
+                # Mov 1: doubled (truncado) + sus continuaciones doubled
+                "0022--JJUUNN--22002255 5555442277"
+                "3366AABBOONNOO TTRRAANNSSFFEERREENNCC"
+                "IIAA SSPPEEII HHOORRAA 0099::5533::4488"
+                " 445599,,55",
+                "RREECCIIBBIIDDOO DDEE BBBBVVAA MMEEXXIICCOO",
+                "RRFFCC BBSSNN222211110077RRAA11",
+                # Mov 2: clean con montos completos
+                "2-JUN-2025 2500011 DEPOSITO EN EFECTIVO 20.00 519,821.39",
+                # Mov 3: clean con continuación clean
+                "2-JUN-2025 9063704 ABONO TRANSFERENCIA SPEI HORA 12:15:24 59,114.83 3,410,152.50",
+                "RECIBIDO DE BBVA MEXICO",
+                "DEL CLIENTE EPIFANIO AGUAYO ZAPATA",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        # Mov 1 doubled tiene monto truncado "459,55" → no genera movimiento
+        # Sus continuaciones se "pierden" (quedan como bloque huérfano) → OK
+        # Mov 2 y 3 se generan normalmente
+        assert len(resultado.movimientos) == 2
+
+        # Mov 2: depósito en efectivo
+        assert resultado.movimientos[0].deposito == Decimal("20.00")
+        assert "DEPOSITO EN EFECTIVO" in resultado.movimientos[0].concepto
+
+        # Mov 3: SPEI con continuación clean
+        assert resultado.movimientos[1].deposito == Decimal("59114.83")
+        assert "RECIBIDO DE BBVA MEXICO" in resultado.movimientos[1].concepto
+        assert "EPIFANIO AGUAYO ZAPATA" in resultado.movimientos[1].concepto
