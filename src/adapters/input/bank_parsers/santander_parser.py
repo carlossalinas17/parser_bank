@@ -84,6 +84,15 @@ class SantanderParser(BankParser):
     # Patrón de cuenta Santander: XX-XXXXXXXX-X
     _ACCOUNT_PATTERN: re.Pattern[str] = re.compile(r"(?<!\d)(\d{2}-\d{8}-\d)(?!\d)")
 
+    # Patrones de líneas que NO son continuación de descripción.
+    # Son ruido de encabezados, pies de página o separadores que
+    # podrían aparecer entre movimientos en el PDF.
+    _NOISE_PATTERNS: list[re.Pattern[str]] = [
+        re.compile(r"^[Pp][áa]gina\s+\d+", re.IGNORECASE),
+        re.compile(r"^\s*-{3,}\s*$"),  # líneas de separación "---"
+        re.compile(r"^\d+\s*$"),  # líneas que son solo un número
+    ]
+
     @property
     def bank_name(self) -> str:
         return "SANTANDER"
@@ -199,11 +208,35 @@ class SantanderParser(BankParser):
 
         Procesa línea por línea buscando el patrón DD-MMM-YYYY FOLIO.
         A diferencia de BBVA/Banorte, NO necesita coordenadas X/Y.
+
+        SOPORTE MULTI-LÍNEA:
+        Los movimientos de Santander pueden tener líneas de continuación
+        con información adicional (remitente, cuenta origen, clave de
+        rastreo, RFC, etc.). Ejemplo real:
+
+            01-ABR-2025 5635768 ABONO TRANSFERENCIA SPEI HORA 09:58:31  51,451.13  2,744,700.76
+                        RECIBIDO DE BAJIO
+                        DE LA CUENTA 030231900039926298
+                        DEL CLIENTE CUEROS ORION SA DE CV
+                        CLAVE DE RASTREO BB1029312020788
+                        REF 1029312
+                        CONCEPTO PAGO
+                        RFC COR230419MX9
+
+        La lógica agrupa líneas en "bloques": cada bloque inicia con una
+        línea que matchea _LINE_PATTERN (fecha) y las líneas siguientes
+        que NO matchean se consideran continuación de la descripción,
+        siempre que no sean ruido (pies de página, separadores, etc.).
         """
         movimientos: list[Movimiento] = []
         procesados: set[str] = set()
 
         for page in pages:
+            # last_match guarda el match de la línea de fecha actual.
+            # continuation_lines acumula las líneas de continuación.
+            last_match: re.Match[str] | None = None
+            continuation_lines: list[str] = []
+
             for linea in page.lines:
                 linea = linea.strip()
                 if not linea:
@@ -213,26 +246,67 @@ class SantanderParser(BankParser):
                 if self._DUPLICATED_TEXT_PATTERN.match(linea):
                     linea = self._limpiar_texto_duplicado(linea)
 
-                # Buscar patrón de movimiento
+                # ¿Es inicio de un nuevo movimiento?
                 match = self._LINE_PATTERN.match(linea)
-                if not match:
-                    continue
+                if match:
+                    # Antes de iniciar el nuevo bloque, procesar el anterior
+                    if last_match is not None:
+                        mov = self._procesar_linea(last_match, continuation_lines, procesados)
+                        if mov is not None:
+                            movimientos.append(mov)
 
-                mov = self._procesar_linea(match, procesados)
+                    # Iniciar nuevo bloque
+                    last_match = match
+                    continuation_lines = []
+                else:
+                    # No es movimiento nuevo → ¿es continuación válida?
+                    if last_match is not None and self._es_linea_continuacion(linea):
+                        continuation_lines.append(linea)
+
+            # Procesar el último movimiento de la página
+            # (no hay siguiente match que lo "cierre")
+            if last_match is not None:
+                mov = self._procesar_linea(last_match, continuation_lines, procesados)
                 if mov is not None:
                     movimientos.append(mov)
 
         return movimientos
 
+    def _es_linea_continuacion(self, linea: str) -> bool:
+        """Determina si una línea es continuación de la descripción anterior.
+
+        Filtra ruido que podría aparecer entre movimientos:
+        - "Página X de Y" (pies de página)
+        - Líneas de separación ("---")
+        - Líneas que son solo números
+
+        ¿Por qué no ser más restrictivo? Porque las líneas de continuación
+        de Santander son muy variadas (remitente, cuenta, clave de rastreo,
+        RFC, concepto libre, etc.) y un filtro demasiado estricto perdería
+        información valiosa. Es mejor incluir una línea de más que perder
+        datos del movimiento.
+
+        Args:
+            linea: Línea de texto ya stripped.
+
+        Returns:
+            True si la línea parece ser continuación legítima.
+        """
+        return all(not pattern.match(linea) for pattern in self._NOISE_PATTERNS)
+
     def _procesar_linea(
         self,
         match: re.Match[str],
+        lineas_continuacion: list[str],
         procesados: set[str],
     ) -> Movimiento | None:
-        """Procesa una línea que matcheó el patrón de movimiento.
+        """Procesa un bloque de movimiento (línea principal + continuación).
 
         Args:
             match: Match del regex con grupos (dia, mes, año, folio, resto).
+            lineas_continuacion: Líneas de texto que siguen al movimiento
+                y forman parte de su descripción (ej: remitente, cuenta
+                origen, clave de rastreo, RFC, etc.).
             procesados: Set de IDs ya procesados para detectar duplicados.
 
         Returns:
@@ -263,6 +337,15 @@ class SantanderParser(BankParser):
         for monto_str in montos_str:
             concepto = concepto.replace(monto_str, "")
         concepto = " ".join(concepto.split()).strip()
+
+        # Anexar líneas de continuación al concepto.
+        # Las líneas de continuación contienen info adicional como
+        # remitente, cuenta origen, clave de rastreo, RFC, etc.
+        # Se unen con " | " para mantener claridad visual y facilitar
+        # el procesamiento posterior.
+        if lineas_continuacion:
+            partes_extra = [" ".join(linea.split()) for linea in lineas_continuacion]
+            concepto = concepto + " | " + " | ".join(partes_extra)
 
         # Determinar monto del movimiento
         monto = parse_money_safe(montos_str[0])
