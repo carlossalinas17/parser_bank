@@ -22,6 +22,7 @@ FIX: Se implementó detección de PDFs híbridos con merge inteligente:
    y OCR para págs 2-3-4 (que solo existían como imagen)
 """
 
+
 from src.domain.models.page_text import PageText
 from src.domain.services.statement_processor import StatementProcessor
 
@@ -147,7 +148,8 @@ class TestMergeHybridPages:
         primary = [
             PageText(
                 page_num=1,
-                text="OTROS CREDITOS\nWIRE TRANSFER 05-01 462,822.89\n" "Total 21,301,312.27",
+                text="OTROS CREDITOS\nWIRE TRANSFER 05-01 462,822.89\n"
+                "Total 21,301,312.27",
             ),
             PageText(page_num=2, text=""),  # imagen
             PageText(page_num=3, text=""),  # imagen
