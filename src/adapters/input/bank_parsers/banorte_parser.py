@@ -85,6 +85,36 @@ class BanorteParser(BankParser):
     # --- Marcador de sección de movimientos ---
     _MOVEMENTS_MARKER: str = "DETALLE DE MOVIMIENTOS"
 
+    # --- Marcadores que DETIENEN la captura de concepto multi-línea ---
+    # Banorte incluye al final de cada página un footer informativo con
+    # teléfonos, URLs y datos del banco. Sin estos marcadores, el footer
+    # se adhiere como continuación del último movimiento de cada página.
+    #
+    # También al final del documento hay secciones informativas como
+    # "Cargos Objetados en el Periodo" e "Informe de Depósitos en efectivo"
+    # que no pertenecen a ningún movimiento.
+    #
+    # Cada string se busca con `in` (contención) dentro del texto de la
+    # línea siguiente, así que no necesitan ser el inicio exacto.
+    _CONTINUATION_STOP_MARKERS: list[str] = [
+        # --- Footer de página (aparece en TODAS las páginas) ---
+        "Línea Directa",
+        "Linea Directa",  # sin acento (variante OCR)
+        "Ciudad de México",
+        "Ciudad de Mexico",  # sin acento
+        "www.banorte",
+        "Banco Mercan",  # "Banco Mercantil" truncado por pdfplumber
+        "800 DIRECTA",
+        "Resto del pa",  # "Resto del país" — cortamos antes del acento
+        # --- Secciones informativas al final del documento ---
+        "Cargos Objetados",
+        "Informe de Dep",  # "Informe de Depósitos en efectivo"
+        "OTROS\u25bc",  # "OTROS▼" (triángulo Unicode)
+        "OTROS▼",  # redundante pero explícito
+        # --- Encabezados de tabla post-movimientos ---
+        "Folio Fecha Tipo",
+    ]
+
     @property
     def bank_name(self) -> str:
         return "BANORTE"
@@ -298,6 +328,18 @@ class BanorteParser(BankParser):
                 continue
 
             # Capturar líneas de continuación (concepto multi-línea)
+            #
+            # Banorte tiene conceptos que ocupan 2 o más líneas. Ejemplo:
+            #   05-OCT-24  SPEI RECIBIDO DE EMPRESA
+            #              REFERENCIA: ABC123 CVE RAST: XYZ789
+            #
+            # Se leen todas las líneas siguientes que NO empiecen con fecha
+            # y NO sean footer/trailer del PDF.
+            #
+            # CONDICIONES DE PARADA (cualquiera detiene la captura):
+            # 1. Línea que empieza con fecha → es otro movimiento
+            # 2. Línea que contiene un marcador de footer/trailer
+            #    (teléfonos del banco, URLs, secciones informativas)
             todas_palabras = list(palabras_linea)
             j = i + 1
             while j < len(ys_ordenados):
@@ -305,8 +347,16 @@ class BanorteParser(BankParser):
                 palabras_siguiente = sorted(lineas_por_y[y_siguiente], key=lambda p: p.x0)
                 texto_siguiente = " ".join(p.text for p in palabras_siguiente)
 
-                # Si empieza con fecha → otro movimiento, salir
+                # Parada 1: Si empieza con fecha → otro movimiento
                 if patron_fecha.match(texto_siguiente):
+                    break
+
+                # Parada 2: Si contiene un marcador de footer/trailer
+                # del PDF → ya no es parte de ningún concepto.
+                # Ejemplo: "Línea Directa para su empresa: Ciudad de
+                # México: (55) 5140 5640..." aparece al pie de cada
+                # página y NO pertenece al último movimiento.
+                if self._es_linea_no_concepto(texto_siguiente):
                     break
 
                 todas_palabras.extend(palabras_siguiente)
@@ -434,6 +484,29 @@ class BanorteParser(BankParser):
     # =================================================================
     # Helpers
     # =================================================================
+
+    def _es_linea_no_concepto(self, texto: str) -> bool:
+        """Determina si una línea es footer/trailer y NO parte de un concepto.
+
+        Se usa durante la captura de líneas de continuación para detener
+        la recolección cuando encontramos texto que NO pertenece a ningún
+        movimiento bancario.
+
+        ¿Por qué no simplemente filtrar después?
+        Porque una vez que el texto del footer se mezcla con el concepto,
+        es muy difícil separarlo limpiamente. Es mejor detectarlo ANTES
+        de agregarlo. El footer incluye teléfonos, URLs y caracteres
+        especiales que no aparecen en conceptos legítimos de Banorte.
+
+        Args:
+            texto: Texto completo de la línea candidata a continuación.
+
+        Returns:
+            True si la línea es footer/trailer (NO es concepto).
+            False si la línea podría ser parte de un concepto.
+        """
+        texto_upper = texto.upper()
+        return any(marcador.upper() in texto_upper for marcador in self._CONTINUATION_STOP_MARKERS)
 
     def _parsear_fecha(self, fecha_str: str, año_default: int) -> date:
         """Convierte string de fecha a date.
