@@ -151,9 +151,7 @@ class StatementProcessor:
                 return extractor
         return None
 
-    def _extract_with_fallback(
-        self, file_path: Path
-    ) -> list[PageText] | None:
+    def _extract_with_fallback(self, file_path: Path) -> list[PageText] | None:
         """Intenta extraer texto probando extractores en orden.
 
         Si el primer extractor (pdfplumber) devuelve páginas vacías,
@@ -186,9 +184,7 @@ class StatementProcessor:
             None si ningún extractor pudo extraer texto.
         """
         # Filtrar extractores que pueden manejar este archivo
-        extractores_compatibles = [
-            e for e in self._extractors if e.can_handle(file_path)
-        ]
+        extractores_compatibles = [e for e in self._extractors if e.can_handle(file_path)]
 
         if not extractores_compatibles:
             self._logger.log_file_skipped(
@@ -254,9 +250,7 @@ class StatementProcessor:
             return first_result
 
         # Ningún extractor produjo texto
-        self._logger.log_file_skipped(
-            file_path, "PDF sin texto extraíble (ni nativo ni OCR)"
-        )
+        self._logger.log_file_skipped(file_path, "PDF sin texto extraíble (ni nativo ni OCR)")
         return None
 
     @staticmethod
