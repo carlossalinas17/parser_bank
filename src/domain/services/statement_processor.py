@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from src.domain.exceptions import BancoNoIdentificadoError, ExtractionError, ParseError
+from src.domain.models.page_text import PageText
 from src.domain.models.resultado_parseo import ResultadoParseo
 from src.domain.ports.bank_identifier import BankIdentifier
 from src.domain.ports.process_logger import ProcessLogger
@@ -65,26 +66,16 @@ class StatementProcessor:
             ResultadoParseo si el procesamiento fue exitoso.
             None si el archivo fue descartado o hubo un error no fatal.
         """
-        # Paso 1: Seleccionar extractor
-        extractor = self._find_extractor(file_path)
-        if extractor is None:
-            self._logger.log_file_skipped(
-                file_path, f"Ningún extractor puede manejar '{file_path.suffix}'"
-            )
-            return None
-
+        # Paso 1: Seleccionar extractor y extraer texto
+        #
+        # Se prueban los extractores en orden de prioridad. Si el
+        # primero (pdfplumber) devuelve páginas vacías, se intenta
+        # con el siguiente (OCR). Esto maneja PDFs escaneados como
+        # los de Vantage Bank (abril, junio, octubre) que son 100%
+        # imagen sin capa de texto.
         self._logger.log_file_received(file_path, file_path.suffix)
-        self._logger.log_extraction_start(file_path, extractor.name)
-
-        # Paso 2: Extraer texto
-        try:
-            pages = extractor.extract(file_path)
-        except ExtractionError as e:
-            self._logger.log_error(file_path, e)
-            return None
-
-        if not pages or all(p.is_empty for p in pages):
-            self._logger.log_file_skipped(file_path, "PDF sin texto extraíble")
+        pages = self._extract_with_fallback(file_path)
+        if pages is None:
             return None
 
         # Paso 3: Identificar banco
@@ -159,3 +150,146 @@ class StatementProcessor:
             if extractor.can_handle(file_path):
                 return extractor
         return None
+
+    def _extract_with_fallback(self, file_path: Path) -> list[PageText] | None:
+        """Intenta extraer texto probando extractores en orden.
+
+        Si el primer extractor (pdfplumber) devuelve páginas vacías,
+        intenta con el siguiente (OCR). Esto es transparente para el
+        resto del pipeline — el parser recibe PageText sin importar
+        de qué extractor vino.
+
+        CASO ESPECIAL — PDFs HÍBRIDOS:
+        Algunos PDFs de Vantage Bank (y posiblemente otros bancos) tienen
+        páginas mixtas: unas con texto embebido y otras que son imagen pura.
+        Ejemplo: mayo 2025 tiene página 1 con texto (depósitos) pero
+        páginas 2-3 como imagen (retiros). En este caso:
+        1. pdfplumber extrae texto de la página 1 → OK
+        2. pdfplumber devuelve páginas 2-3 vacías → problema
+        3. Como página 1 tiene texto, el fallback a OCR NO se activa
+        4. Los retiros de las páginas 2-3 se pierden completamente
+
+        FIX: Si pdfplumber devuelve ALGUNAS páginas vacías, se activa OCR
+        SOLO para esas páginas vacías, y se mezcla el resultado. Así:
+        - Páginas con texto nativo → se usa pdfplumber (más preciso)
+        - Páginas imagen → se usa OCR (único método posible)
+
+        ¿Por qué no simplemente poner OCR primero?
+        Porque OCR es lento (~5s por página vs ~0.1s de pdfplumber)
+        y menos preciso. Solo se usa cuando pdfplumber no puede
+        extraer nada (PDFs escaneados / imagen-only).
+
+        Returns:
+            Lista de PageText si algún extractor tuvo éxito.
+            None si ningún extractor pudo extraer texto.
+        """
+        # Filtrar extractores que pueden manejar este archivo
+        extractores_compatibles = [e for e in self._extractors if e.can_handle(file_path)]
+
+        if not extractores_compatibles:
+            self._logger.log_file_skipped(
+                file_path,
+                f"Ningún extractor puede manejar '{file_path.suffix}'",
+            )
+            return None
+
+        first_result: list[PageText] | None = None
+
+        for extractor in extractores_compatibles:
+            self._logger.log_extraction_start(file_path, extractor.name)
+
+            try:
+                pages = extractor.extract(file_path)
+            except ExtractionError as e:
+                self._logger.log_error(file_path, e)
+                continue  # Probar siguiente extractor
+
+            # Si ya tenemos resultado parcial (PDF híbrido) y el nuevo
+            # extractor produjo algo, mezclar los resultados:
+            # - Páginas con texto nativo (pdfplumber) → se conservan
+            # - Páginas vacías → se rellenan con OCR
+            if first_result is not None and pages:
+                merged = self._merge_hybrid_pages(first_result, pages)
+                if merged and not all(p.is_empty for p in merged):
+                    return merged
+                # Si aún quedan vacías después del merge, continuar
+                first_result = merged
+                continue
+
+            # Caso 1: TODAS las páginas tienen texto → éxito total
+            if pages and not any(p.is_empty for p in pages):
+                return pages
+
+            # Caso 2: ALGUNAS páginas tienen texto (PDF híbrido)
+            #
+            # Guardar este resultado parcial. El siguiente extractor
+            # (OCR) producirá texto para las páginas faltantes, y se
+            # mezclarán en la siguiente iteración del loop.
+            if pages and not all(p.is_empty for p in pages):
+                empty_count = sum(1 for p in pages if p.is_empty)
+                total_count = len(pages)
+                first_result = pages
+
+                self._logger.log_file_skipped(
+                    file_path,
+                    f"PDF híbrido: {empty_count}/{total_count} páginas "
+                    f"sin texto con {extractor.name}, "
+                    f"intentando OCR en páginas vacías...",
+                )
+                continue
+
+            # Caso 3: TODAS las páginas vacías → intentar siguiente extractor
+            self._logger.log_file_skipped(
+                file_path,
+                f"Sin texto con {extractor.name}, intentando siguiente...",
+            )
+
+        # Si el OCR no produjo nada pero teníamos resultado parcial,
+        # devolver lo que el primer extractor pudo sacar
+        if first_result is not None and not all(p.is_empty for p in first_result):
+            return first_result
+
+        # Ningún extractor produjo texto
+        self._logger.log_file_skipped(file_path, "PDF sin texto extraíble (ni nativo ni OCR)")
+        return None
+
+    @staticmethod
+    def _merge_hybrid_pages(
+        primary: list[PageText],
+        secondary: list[PageText],
+    ) -> list[PageText]:
+        """Mezcla páginas de dos extractores para PDFs híbridos.
+
+        Para cada página, usa el texto del extractor primario (pdfplumber)
+        si está disponible. Si la página primaria está vacía, usa el
+        texto del extractor secundario (OCR).
+
+        ¿Por qué preferir pdfplumber sobre OCR?
+        Porque el texto nativo de pdfplumber es exacto (sin errores de OCR).
+        Los montos "1,000,000.00" se leen perfectos con pdfplumber, pero
+        OCR puede producir "1,000 000.00" o "1,000,000. 00". Solo se usa
+        OCR cuando no hay alternativa.
+
+        Args:
+            primary: Páginas del primer extractor (pdfplumber).
+                     Algunas pueden estar vacías.
+            secondary: Páginas del segundo extractor (OCR).
+                       Idealmente todas tienen texto.
+
+        Returns:
+            Lista de PageText mezcladas. Misma longitud que primary.
+        """
+        merged: list[PageText] = []
+
+        for i, page in enumerate(primary):
+            if not page.is_empty:
+                # Página primaria tiene texto → usarla
+                merged.append(page)
+            elif i < len(secondary) and not secondary[i].is_empty:
+                # Página primaria vacía, pero OCR tiene texto → usar OCR
+                merged.append(secondary[i])
+            else:
+                # Ambas vacías → pasar la vacía (ej: página 4 de formulario)
+                merged.append(page)
+
+        return merged
