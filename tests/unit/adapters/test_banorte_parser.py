@@ -124,11 +124,16 @@ class TestBanorteParser:
 
     # === Tests de clasificación por keywords (2 montos) ===
 
-    def test_retiro_por_keyword_default(self, parser):
-        """Con 2 montos, si el concepto NO es keyword de depósito → retiro."""
+    def test_retiro_por_posicion_x_2_montos(self, parser):
+        """Con 2 montos, X en rango retiro (445-515) → retiro.
+
+        La posición X es el clasificador primario. Si el monto
+        está en la columna de retiros (x0≈463), es retiro
+        independientemente del concepto.
+        """
         page = self._make_banorte_page(
             concepto_words=["PAGO", "SERVICIO"],
-            montos=[("1,500.00", 400.0), ("118,500.00", 530.0)],
+            montos=[("1,500.00", 463.0), ("118,500.00", 530.0)],
         )
         resultado = parser.parse([page], file_name="test.pdf")
 
@@ -174,6 +179,99 @@ class TestBanorteParser:
 
         mov = resultado.movimientos[0]
         assert mov.deposito == Decimal("234.56")
+
+    # === Tests de clasificación por X en caso 2 montos (bug #45) ===
+    #
+    # BUG ORIGINAL: con 2 montos, solo se usaban keywords para
+    # clasificar. "DEP.EFECTIVO" no matchea "DEPOSITO" → se
+    # clasificaba como retiro. Pero la coordenada X indicaba
+    # claramente columna depósito (x0≈389 vs retiro x0≈463).
+    #
+    # FIX: en 2 montos, X position es el clasificador primario.
+    # Keywords son fallback solo si X no cae en ningún rango.
+
+    def test_dep_efectivo_2_montos_x_deposito(self, parser):
+        """DEP.EFECTIVO con X en columna depósito → depósito.
+
+        Este es el caso real del bug: el concepto "DEP.EFECTIVO"
+        no empieza con "DEPOSITO" (es "DEP." ≠ "DEPOSITO"), pero
+        su monto está en x0≈389 que es columna de depósitos.
+        El fix usa X primero → depósito correcto.
+        """
+        page = self._make_banorte_page(
+            concepto_words=["DEP.EFECTIVO"],
+            montos=[("43,700.00", 389.6), ("31,763,734.72", 530.0)],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        mov = resultado.movimientos[0]
+        assert mov.deposito == Decimal("43700.00")
+        assert mov.retiro == Decimal("0")
+        assert mov.tipo == "deposito"
+
+    def test_spei_compensacion_2_montos_x_deposito(self, parser):
+        """SPEI COMPENSACION con X en columna depósito → depósito.
+
+        Otro caso real del bug: "SPEI 01042025 COMPENSACION DESFASE"
+        no empieza con "SPEI RECIBIDO" ni contiene "SPEI RECIBIDO",
+        pero x0=405 cae en rango depósito (370-445).
+        """
+        page = self._make_banorte_page(
+            concepto_words=["SPEI", "01042025", "COMPENSACION", "DESFASE"],
+            montos=[("0.04", 405.0), ("31,747,609.37", 530.0)],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        mov = resultado.movimientos[0]
+        assert mov.deposito == Decimal("0.04")
+        assert mov.retiro == Decimal("0")
+        assert mov.tipo == "deposito"
+
+    def test_cheque_pagado_2_montos_x_retiro(self, parser):
+        """CHEQUE PAGADO con X en columna retiro → retiro.
+
+        Verifica que retiros legítimos siguen funcionando: el monto
+        está en x0≈463 (columna retiro, rango 445-515).
+        """
+        page = self._make_banorte_page(
+            concepto_words=["CHEQUE", "PAGADO", "0125326"],
+            montos=[("2,075.93", 463.1), ("31,761,658.79", 530.0)],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        mov = resultado.movimientos[0]
+        assert mov.retiro == Decimal("2075.93")
+        assert mov.deposito == Decimal("0")
+        assert mov.tipo == "retiro"
+
+    def test_keyword_fallback_x_fuera_rango(self, parser):
+        """Si X no cae en ningún rango → fallback a keywords.
+
+        Cuando la posición X del monto no está ni en rango
+        depósito (370-445) ni en rango retiro (445-515),
+        se usa el concepto para decidir. "DEPOSITO" → depósito.
+        """
+        page = self._make_banorte_page(
+            concepto_words=["DEPOSITO", "EN", "EFECTIVO"],
+            montos=[("5,000.00", 350.0), ("125,000.00", 530.0)],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        mov = resultado.movimientos[0]
+        assert mov.deposito == Decimal("5000.00")
+        assert mov.tipo == "deposito"
+
+    def test_keyword_fallback_retiro_x_fuera_rango(self, parser):
+        """Si X fuera de rango y concepto NO es keyword → retiro."""
+        page = self._make_banorte_page(
+            concepto_words=["CARGO", "COMISION"],
+            montos=[("500.00", 350.0), ("119,500.00", 530.0)],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        mov = resultado.movimientos[0]
+        assert mov.retiro == Decimal("500.00")
+        assert mov.tipo == "retiro"
 
     # === Tests de clasificación por posición X (3+ montos) ===
 

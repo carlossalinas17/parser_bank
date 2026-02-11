@@ -61,18 +61,24 @@ class BanorteParser(BankParser):
     X_RETIRO_MAX: float = 515.0
     X_SALDO_MIN: float = 515.0
 
-    # --- Keywords que identifican depósitos (cuando solo hay 2 montos) ---
-    # Banorte no siempre tiene 3 columnas visibles; cuando solo aparecen
-    # [MONTO, SALDO], el concepto determina si es depósito o retiro.
+    # --- Keywords que identifican depósitos (fallback para 2 montos) ---
+    # Se usan SOLO cuando la posición X no es concluyente (fuera de
+    # ambas columnas). Normalmente la posición X es suficiente.
+    #
+    # NOTA: "DEP." cubre "DEP.EFECTIVO" (abreviatura frecuente en Banorte).
+    # "DEPOSITO" no lo cubre porque "DEP.EFECTIVO" no empieza con
+    # "DEPOSITO" sino con "DEP.".
     _DEPOSIT_KEYWORDS: list[str] = [
         "DEPOSITO",
         "DEPÓSITO",
+        "DEP.",
         "SPEI RECIBIDO",
         "ABONO",
         "INTERES",
         "INTERÉS",
         "LIQ.INT",
         "RENDIMIENTO",
+        "COMPENSACION DESFASE",
     ]
 
     # --- Patrones de referencia dentro del concepto ---
@@ -431,12 +437,21 @@ class BanorteParser(BankParser):
     ) -> tuple[Decimal, Decimal]:
         """Clasifica los montos como depósito o retiro.
 
-        Lógica DIFERENTE a BBVA:
-        - 2 montos: [MONTO, SALDO] → se usa el concepto para clasificar.
-          Si el concepto empieza con keywords de depósito → depósito.
-          En cualquier otro caso → retiro.
+        Lógica de clasificación:
+        - 2 montos: [MONTO, SALDO] → se usa posición X del monto.
+          La coordenada X indica en qué columna física está el número:
+            - x0 en rango [370, 445) → columna DEPOSITO
+            - x0 en rango [445, 515) → columna RETIRO
+          Solo si X no es concluyente se usa el concepto (keywords).
+
         - 3+ montos: [DEPOSITO, RETIRO, SALDO] → se usa posición X.
           El último monto se ignora (es el saldo).
+
+        ¿Por qué X primero y keywords después?
+        Porque la posición X es la columna física del PDF — es
+        determinista. Los keywords son heurísticos y fallan con
+        abreviaturas ("DEP.EFECTIVO" ≠ "DEPOSITO") o conceptos
+        atípicos ("SPEI 01042025 COMPENSACION..." ≠ "SPEI RECIBIDO").
 
         Args:
             montos_encontrados: Lista de (x_pos, monto, es_negativo).
@@ -449,22 +464,34 @@ class BanorteParser(BankParser):
         retiro = Decimal("0")
 
         if len(montos_encontrados) == 2:
-            # Formato: [MONTO, SALDO] — clasificar por keywords
+            # Formato: [MONTO, SALDO]
             x_pos, monto, es_negativo = montos_encontrados[0]
 
             if es_negativo:
                 monto = -monto
 
-            concepto_upper = concepto.upper()
-            es_deposito = (
-                any(concepto_upper.startswith(kw) for kw in self._DEPOSIT_KEYWORDS)
-                or "SPEI RECIBIDO" in concepto_upper
-            )
-
-            if es_deposito:
+            # PRIMERO: clasificar por posición X (más confiable).
+            # La coordenada X indica sin ambigüedad en qué columna
+            # física del PDF está el monto. Ejemplo del PDF real:
+            #   DEP.EFECTIVO → x0=389.6 (columna depósito)
+            #   CHEQUE PAGADO → x0=463.1 (columna retiro)
+            if self.X_DEPOSITO_MIN <= x_pos < self.X_DEPOSITO_MAX:
                 deposito = monto
-            else:
+            elif self.X_RETIRO_MIN <= x_pos < self.X_RETIRO_MAX:
                 retiro = monto
+            else:
+                # FALLBACK: posición X fuera de ambos rangos →
+                # clasificar por keywords del concepto.
+                concepto_upper = concepto.upper()
+                es_deposito = (
+                    any(concepto_upper.startswith(kw) for kw in self._DEPOSIT_KEYWORDS)
+                    or "SPEI RECIBIDO" in concepto_upper
+                )
+
+                if es_deposito:
+                    deposito = monto
+                else:
+                    retiro = monto
 
         elif len(montos_encontrados) >= 3:
             # Formato: [DEPOSITO, RETIRO, SALDO] — clasificar por posición X
