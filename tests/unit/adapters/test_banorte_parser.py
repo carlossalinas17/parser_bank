@@ -331,3 +331,330 @@ class TestBanorteParser:
 
     def test_bank_name(self, parser):
         assert parser.bank_name == "BANORTE"
+
+
+# ============================================================
+# Tests de limpieza de footer/trailer en conceptos
+# ============================================================
+
+
+class TestBanorteFooterTrailerCleanup:
+    """Tests que validan que el footer de página y las secciones
+    informativas del final del documento NO contaminen los conceptos.
+
+    BUG: El loop de continuación multi-línea solo se detenía al
+    encontrar una línea con fecha. Todo lo demás se agregaba al
+    concepto del último movimiento. Esto causaba que:
+
+    1. El footer de cada página (teléfonos, URLs del banco) se
+       pegara al último movimiento de cada hoja:
+       "PAGO SERVICIO Línea Directa para su empresa: Ciudad de
+       México: (55) 5140 5640 | Monterrey: (81) 8156 9640..."
+
+    2. La sección "OTROS▼ Cargos Objetados en el Periodo..." al
+       final del documento se pegara al último movimiento total.
+
+    FIX: Se agregaron marcadores de parada (_CONTINUATION_STOP_MARKERS)
+    que detienen la captura cuando detectan contenido de footer/trailer.
+    """
+
+    @pytest.fixture
+    def parser(self):
+        return BanorteParser()
+
+    def _make_word(self, text: str, x0: float, top: float) -> WordInfo:
+        return WordInfo(
+            text=text,
+            x0=x0,
+            x1=x0 + len(text) * 7,
+            top=top,
+            bottom=top + 12,
+        )
+
+    def _page_with_footer(
+        self,
+        footer_words: list[str],
+        concepto_words: list[str] | None = None,
+    ) -> PageText:
+        """Crea página con un movimiento seguido de líneas de footer.
+
+        Simula el layout real de Banorte donde después del último
+        movimiento de la página aparece el pie de página con info
+        de contacto del banco.
+
+        Args:
+            footer_words: Lista de palabras del footer. Cada palabra
+                se coloca en una línea separada (Y distinta) para
+                simular el footer multi-línea real.
+            concepto_words: Palabras del concepto del movimiento.
+        """
+        if concepto_words is None:
+            concepto_words = ["PAGO", "SERVICIO", "LUZ"]
+
+        words: list[WordInfo] = []
+        text_parts: list[str] = []
+
+        # Encabezado mínimo
+        y = 50.0
+        words.append(self._make_word("BANORTE", 50, y))
+        words.append(self._make_word("CUENTA", 50, y + 15))
+        words.append(self._make_word("PRODUCTIVA", 110, y + 15))
+        words.append(self._make_word("ESPECIAL", 190, y + 15))
+        words.append(self._make_word("0987654321", 260, y + 15))
+        words.append(self._make_word("Periodo", 50, y + 30))
+        words.append(self._make_word("Del", 110, y + 30))
+        words.append(self._make_word("01-OCT-24", 140, y + 30))
+        words.append(self._make_word("Al", 220, y + 30))
+        words.append(self._make_word("31-OCT-24", 240, y + 30))
+        y += 45
+        words.append(self._make_word("DETALLE", 50, y))
+        words.append(self._make_word("DE", 110, y))
+        words.append(self._make_word("MOVIMIENTOS", 130, y))
+        y += 20
+
+        text_parts.append("BANORTE")
+        text_parts.append("CUENTA PRODUCTIVA ESPECIAL 0987654321")
+        text_parts.append("Periodo Del 01-OCT-24 Al 31-OCT-24")
+        text_parts.append("DETALLE DE MOVIMIENTOS")
+
+        # Movimiento
+        mov_y = y
+        words.append(self._make_word("15-OCT-24", 50, mov_y))
+        x = 140.0
+        for palabra in concepto_words:
+            words.append(self._make_word(palabra, x, mov_y))
+            x += len(palabra) * 7 + 5
+        words.append(self._make_word("1,500.00", 460, mov_y))
+        words.append(self._make_word("118,500.00", 530, mov_y))
+
+        mov_text = f"15-OCT-24 {' '.join(concepto_words)} 1,500.00 118,500.00"
+        text_parts.append(mov_text)
+        y = mov_y + 20
+
+        # Footer/trailer: cada elemento en su propia línea Y
+        for footer_line in footer_words:
+            for i, word in enumerate(footer_line.split()):
+                words.append(self._make_word(word, 50 + i * 60, y))
+            text_parts.append(footer_line)
+            y += 15
+
+        return PageText(
+            page_num=1,
+            text="\n".join(text_parts),
+            words=words,
+        )
+
+    # --- Tests del footer de página ---
+
+    def test_footer_linea_directa_no_contamina(self, parser):
+        """El footer 'Línea Directa para su empresa...' NO se pega
+        al concepto del último movimiento de la página."""
+        page = self._page_with_footer(
+            footer_words=[
+                "Línea Directa para su empresa:",
+                "Ciudad de México: (55) 5140 5640",
+                "Monterrey: (81) 8156 9640",
+                "Guadalajara: (33) 3669 9040",
+                "Resto del país: 800 DIRECTA (3473282)",
+                "Visita nuestra página: www.banorte.com",
+                "Banco Mercantil del Norte",
+            ],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        concepto = resultado.movimientos[0].concepto
+        assert "Línea Directa" not in concepto
+        assert "Ciudad de México" not in concepto
+        assert "www.banorte" not in concepto
+        assert "Banco Mercan" not in concepto
+        assert "800 DIRECTA" not in concepto
+        assert "PAGO SERVICIO LUZ" in concepto
+
+    def test_footer_sin_acento_no_contamina(self, parser):
+        """Variante sin acentos (OCR) tampoco contamina."""
+        page = self._page_with_footer(
+            footer_words=[
+                "Linea Directa para su empresa:",
+                "Ciudad de Mexico: (55) 5140 5640",
+            ],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        concepto = resultado.movimientos[0].concepto
+        assert "Linea Directa" not in concepto
+        assert "Ciudad de Mexico" not in concepto
+
+    # --- Tests del trailer del documento ---
+
+    def test_trailer_cargos_objetados_no_contamina(self, parser):
+        """La sección 'OTROS▼ Cargos Objetados...' al final del
+        documento NO se pega al último movimiento."""
+        page = self._page_with_footer(
+            footer_words=[
+                "OTROS▼ Cargos Objetados en el Periodo",
+                "Folio Fecha Tipo de Cargo Monto Fecha de Cargo",
+                "N/A N/A N/A N/A N/A",
+            ],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        concepto = resultado.movimientos[0].concepto
+        assert "Cargos Objetados" not in concepto
+        assert "OTROS" not in concepto
+        assert "Folio Fecha Tipo" not in concepto
+        assert "N/A" not in concepto
+
+    def test_trailer_informe_depositos_no_contamina(self, parser):
+        """'Informe de Depósitos en efectivo' no contamina."""
+        page = self._page_with_footer(
+            footer_words=[
+                "Informe de Depósitos en efectivo realizados",
+            ],
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        concepto = resultado.movimientos[0].concepto
+        assert "Informe de Dep" not in concepto
+
+    # --- Test de que conceptos multi-línea legítimos SÍ funcionan ---
+
+    def test_continuacion_legitima_si_se_captura(self, parser):
+        """Líneas de continuación legítimas (referencias, claves)
+        SÍ se siguen agregando al concepto.
+
+        Este test asegura que el fix no es demasiado agresivo.
+        Solo se detiene con marcadores de footer/trailer, no con
+        cualquier línea sin fecha.
+        """
+        words: list[WordInfo] = []
+        text_parts: list[str] = []
+
+        y = 50.0
+        words.append(self._make_word("BANORTE", 50, y))
+        words.append(self._make_word("CUENTA", 50, y + 15))
+        words.append(self._make_word("PRODUCTIVA", 110, y + 15))
+        words.append(self._make_word("ESPECIAL", 190, y + 15))
+        words.append(self._make_word("0987654321", 260, y + 15))
+        words.append(self._make_word("Periodo", 50, y + 30))
+        words.append(self._make_word("Del", 110, y + 30))
+        words.append(self._make_word("01-OCT-24", 140, y + 30))
+        words.append(self._make_word("Al", 220, y + 30))
+        words.append(self._make_word("31-OCT-24", 240, y + 30))
+        y += 45
+        words.append(self._make_word("DETALLE", 50, y))
+        words.append(self._make_word("DE", 110, y))
+        words.append(self._make_word("MOVIMIENTOS", 130, y))
+        y += 20
+
+        text_parts.extend(
+            [
+                "BANORTE",
+                "CUENTA PRODUCTIVA ESPECIAL 0987654321",
+                "Periodo Del 01-OCT-24 Al 31-OCT-24",
+                "DETALLE DE MOVIMIENTOS",
+            ]
+        )
+
+        # Movimiento con concepto multi-línea legítimo
+        mov_y = y
+        words.append(self._make_word("15-OCT-24", 50, mov_y))
+        words.append(self._make_word("SPEI", 140, mov_y))
+        words.append(self._make_word("RECIBIDO", 180, mov_y))
+        words.append(self._make_word("50,000.00", 400, mov_y))
+        words.append(self._make_word("170,000.00", 530, mov_y))
+        text_parts.append("15-OCT-24 SPEI RECIBIDO 50,000.00 170,000.00")
+
+        # Línea de continuación legítima (referencia)
+        cont_y = mov_y + 15
+        words.append(self._make_word("REFERENCIA:", 140, cont_y))
+        words.append(self._make_word("ABC123", 230, cont_y))
+        words.append(self._make_word("CVE", 300, cont_y))
+        words.append(self._make_word("RAST:", 330, cont_y))
+        words.append(self._make_word("XYZ789", 370, cont_y))
+        text_parts.append("REFERENCIA: ABC123 CVE RAST: XYZ789")
+
+        page = PageText(
+            page_num=1,
+            text="\n".join(text_parts),
+            words=words,
+        )
+
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+        assert "REFERENCIA:" in mov.concepto
+        assert mov.referencia == "ABC123"
+        assert mov.deposito == Decimal("50000.00")
+
+    # --- Test combinado: continuación + footer ---
+
+    def test_continuacion_legitima_seguida_de_footer(self, parser):
+        """Un concepto multi-línea legítimo seguido de footer:
+        la referencia SÍ se captura, el footer NO."""
+        words: list[WordInfo] = []
+        text_parts: list[str] = []
+
+        y = 50.0
+        words.append(self._make_word("BANORTE", 50, y))
+        words.append(self._make_word("CUENTA", 50, y + 15))
+        words.append(self._make_word("PRODUCTIVA", 110, y + 15))
+        words.append(self._make_word("ESPECIAL", 190, y + 15))
+        words.append(self._make_word("0987654321", 260, y + 15))
+        words.append(self._make_word("Periodo", 50, y + 30))
+        words.append(self._make_word("Del", 110, y + 30))
+        words.append(self._make_word("01-OCT-24", 140, y + 30))
+        words.append(self._make_word("Al", 220, y + 30))
+        words.append(self._make_word("31-OCT-24", 240, y + 30))
+        y += 45
+        words.append(self._make_word("DETALLE", 50, y))
+        words.append(self._make_word("DE", 110, y))
+        words.append(self._make_word("MOVIMIENTOS", 130, y))
+        y += 20
+
+        text_parts.extend(
+            [
+                "BANORTE",
+                "CUENTA PRODUCTIVA ESPECIAL 0987654321",
+                "Periodo Del 01-OCT-24 Al 31-OCT-24",
+                "DETALLE DE MOVIMIENTOS",
+            ]
+        )
+
+        # Movimiento
+        mov_y = y
+        words.append(self._make_word("15-OCT-24", 50, mov_y))
+        words.append(self._make_word("PAGO", 140, mov_y))
+        words.append(self._make_word("SERVICIO", 185, mov_y))
+        words.append(self._make_word("1,500.00", 460, mov_y))
+        words.append(self._make_word("118,500.00", 530, mov_y))
+        text_parts.append("15-OCT-24 PAGO SERVICIO 1,500.00 118,500.00")
+
+        # Continuación legítima
+        cont_y = mov_y + 15
+        words.append(self._make_word("REFERENCIA:", 140, cont_y))
+        words.append(self._make_word("REF999", 230, cont_y))
+        text_parts.append("REFERENCIA: REF999")
+
+        # Footer (NO debe capturarse)
+        footer_y = cont_y + 25
+        for i, w in enumerate(["Línea", "Directa", "para", "su", "empresa:"]):
+            words.append(self._make_word(w, 50 + i * 60, footer_y))
+        text_parts.append("Línea Directa para su empresa:")
+
+        page = PageText(
+            page_num=1,
+            text="\n".join(text_parts),
+            words=words,
+        )
+
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+        # Continuación legítima SÍ se captura
+        assert "REFERENCIA:" in mov.concepto
+        assert mov.referencia == "REF999"
+        # Footer NO se captura
+        assert "Línea Directa" not in mov.concepto
