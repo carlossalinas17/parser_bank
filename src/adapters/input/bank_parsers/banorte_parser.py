@@ -484,10 +484,7 @@ class BanorteParser(BankParser):
                 # clasificar por keywords del concepto.
                 concepto_upper = concepto.upper()
                 es_deposito = (
-                    any(
-                        concepto_upper.startswith(kw)
-                        for kw in self._DEPOSIT_KEYWORDS
-                    )
+                    any(concepto_upper.startswith(kw) for kw in self._DEPOSIT_KEYWORDS)
                     or "SPEI RECIBIDO" in concepto_upper
                 )
 
@@ -506,10 +503,7 @@ class BanorteParser(BankParser):
                 if self.X_DEPOSITO_MIN <= x_pos < self.X_DEPOSITO_MAX:
                     if deposito == Decimal("0"):
                         deposito = monto
-                elif (
-                    self.X_RETIRO_MIN <= x_pos < self.X_RETIRO_MAX
-                    and retiro == Decimal("0")
-                ):
+                elif self.X_RETIRO_MIN <= x_pos < self.X_RETIRO_MAX and retiro == Decimal("0"):
                     retiro = monto
 
         return (deposito, retiro)
@@ -539,10 +533,7 @@ class BanorteParser(BankParser):
             False si la línea podría ser parte de un concepto.
         """
         texto_upper = texto.upper()
-        return any(
-            marcador.upper() in texto_upper
-            for marcador in self._CONTINUATION_STOP_MARKERS
-        )
+        return any(marcador.upper() in texto_upper for marcador in self._CONTINUATION_STOP_MARKERS)
 
     def _parsear_fecha(self, fecha_str: str, año_default: int) -> date:
         """Convierte string de fecha a date.

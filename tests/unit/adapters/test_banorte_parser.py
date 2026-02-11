@@ -435,6 +435,7 @@ class TestBanorteParser:
 # Tests de limpieza de footer/trailer en conceptos
 # ============================================================
 
+
 class TestBanorteFooterTrailerCleanup:
     """Tests que validan que el footer de página y las secciones
     informativas del final del documento NO contaminen los conceptos.
@@ -461,8 +462,11 @@ class TestBanorteFooterTrailerCleanup:
 
     def _make_word(self, text: str, x0: float, top: float) -> WordInfo:
         return WordInfo(
-            text=text, x0=x0, x1=x0 + len(text) * 7,
-            top=top, bottom=top + 12,
+            text=text,
+            x0=x0,
+            x1=x0 + len(text) * 7,
+            top=top,
+            bottom=top + 12,
         )
 
     def _page_with_footer(
@@ -641,12 +645,14 @@ class TestBanorteFooterTrailerCleanup:
         words.append(self._make_word("MOVIMIENTOS", 130, y))
         y += 20
 
-        text_parts.extend([
-            "BANORTE",
-            "CUENTA PRODUCTIVA ESPECIAL 0987654321",
-            "Periodo Del 01-OCT-24 Al 31-OCT-24",
-            "DETALLE DE MOVIMIENTOS",
-        ])
+        text_parts.extend(
+            [
+                "BANORTE",
+                "CUENTA PRODUCTIVA ESPECIAL 0987654321",
+                "Periodo Del 01-OCT-24 Al 31-OCT-24",
+                "DETALLE DE MOVIMIENTOS",
+            ]
+        )
 
         # Movimiento con concepto multi-línea legítimo
         mov_y = y
@@ -705,12 +711,14 @@ class TestBanorteFooterTrailerCleanup:
         words.append(self._make_word("MOVIMIENTOS", 130, y))
         y += 20
 
-        text_parts.extend([
-            "BANORTE",
-            "CUENTA PRODUCTIVA ESPECIAL 0987654321",
-            "Periodo Del 01-OCT-24 Al 31-OCT-24",
-            "DETALLE DE MOVIMIENTOS",
-        ])
+        text_parts.extend(
+            [
+                "BANORTE",
+                "CUENTA PRODUCTIVA ESPECIAL 0987654321",
+                "Periodo Del 01-OCT-24 Al 31-OCT-24",
+                "DETALLE DE MOVIMIENTOS",
+            ]
+        )
 
         # Movimiento
         mov_y = y
