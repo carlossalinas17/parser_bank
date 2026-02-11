@@ -97,6 +97,14 @@ ignore_missing_imports = true
 module = "xlsxwriter.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "pytesseract.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pdf2image.*"
+ignore_missing_imports = true
+
 # --- Pytest ---
 [tool.pytest.ini_options]
 testpaths = ["tests"]
