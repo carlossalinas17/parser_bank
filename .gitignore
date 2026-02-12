@@ -48,3 +48,5 @@ tests/fixtures/pdfs/*.zip
 
 # Archivos de diagnóstico
 diagnostico_ocr.py
+diagnostico_bankparser.py
+
