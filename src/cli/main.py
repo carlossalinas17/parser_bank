@@ -26,11 +26,11 @@ from pathlib import Path
 from src.adapters.input.bank_identifiers.keyword_identifier import (
     KeywordBankIdentifier,
 )
-from src.adapters.input.text_extractors.pdfplumber_extractor import (
-    PdfplumberExtractor,
-)
 from src.adapters.input.text_extractors.ocr_extractor import (
     OcrExtractor,
+)
+from src.adapters.input.text_extractors.pdfplumber_extractor import (
+    PdfplumberExtractor,
 )
 from src.adapters.output.loggers.console_logger import ConsoleLogger
 from src.adapters.output.writers.excel_writer import ExcelWriter
