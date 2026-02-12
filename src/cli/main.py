@@ -29,6 +29,9 @@ from src.adapters.input.bank_identifiers.keyword_identifier import (
 from src.adapters.input.text_extractors.pdfplumber_extractor import (
     PdfplumberExtractor,
 )
+from src.adapters.input.text_extractors.ocr_extractor import (
+    OcrExtractor,
+)
 from src.adapters.output.loggers.console_logger import ConsoleLogger
 from src.adapters.output.writers.excel_writer import ExcelWriter
 from src.domain.services.statement_processor import StatementProcessor
@@ -51,9 +54,7 @@ def main() -> None:
 
     text_extractors = [
         PdfplumberExtractor(include_words=True),
-        # Aquí se agregarían otros extractores en orden de prioridad:
-        # OcrExtractor(),
-        # ZipTextExtractor(),
+        OcrExtractor(),
     ]
 
     bank_identifier = KeywordBankIdentifier()
