@@ -25,6 +25,7 @@ Dependencias externas:
 - poppler-utils (binario del sistema, para pdf2image)
 """
 
+import platform
 from pathlib import Path
 
 from src.domain.exceptions import ExtractionError, FormatoInvalidoError
@@ -35,6 +36,21 @@ from src.domain.shared.text_cleaner import clean_pdf_text
 # Imports lazy: solo se cargan cuando se usan.
 try:
     import pytesseract
+
+    # En Windows, Tesseract no se agrega al PATH automáticamente.
+    # Hay que indicarle a pytesseract dónde está el ejecutable.
+    # En Linux/Mac esto no es necesario porque apt/brew lo pone en /usr/bin/.
+    if platform.system() == "Windows" and pytesseract is not None:
+        _TESSERACT_WINDOWS_PATHS = [
+            Path.home() / "AppData/Local/Programs/Tesseract-OCR/tesseract.exe",
+            Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
+            Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+        ]
+        for _path in _TESSERACT_WINDOWS_PATHS:
+            if _path.exists():
+                pytesseract.pytesseract.tesseract_cmd = str(_path)
+                break
+
 except ImportError:
     pytesseract = None  # type: ignore[assignment]
 
