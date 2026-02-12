@@ -45,3 +45,6 @@ tests/fixtures/pdfs/*.zip
 
 # Carpetas de estados de cuentas
 /Data/
+
+# Archivos de diagnóstico
+diagnostico_ocr.py
