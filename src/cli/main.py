@@ -26,6 +26,9 @@ from pathlib import Path
 from src.adapters.input.bank_identifiers.keyword_identifier import (
     KeywordBankIdentifier,
 )
+from src.adapters.input.text_extractors.ocr_extractor import (
+    OcrExtractor,
+)
 from src.adapters.input.text_extractors.pdfplumber_extractor import (
     PdfplumberExtractor,
 )
@@ -51,9 +54,7 @@ def main() -> None:
 
     text_extractors = [
         PdfplumberExtractor(include_words=True),
-        # Aquí se agregarían otros extractores en orden de prioridad:
-        # OcrExtractor(),
-        # ZipTextExtractor(),
+        OcrExtractor(),
     ]
 
     bank_identifier = KeywordBankIdentifier()
