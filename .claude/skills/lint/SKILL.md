@@ -1,3 +1,11 @@
+---
+name: lint
+description: Ejecuta linting y auto-formateo del codigo. Usa ruff, black y mypy para verificar y corregir estilo.
+user-invocable: true
+disable-model-invocation: true
+allowed-tools: Bash, Read, Edit
+---
+
 # Skill: Linting y formateo
 
 Ejecuta las herramientas de calidad de codigo del proyecto.

@@ -1,3 +1,11 @@
+---
+name: pr
+description: Crea un Pull Request de la rama actual hacia develop con verificaciones automaticas y descripcion generada.
+user-invocable: true
+disable-model-invocation: true
+allowed-tools: Bash, Read, Grep, Glob
+---
+
 # Skill: Crear Pull Request
 
 Crea un Pull Request de la rama actual hacia `develop`.

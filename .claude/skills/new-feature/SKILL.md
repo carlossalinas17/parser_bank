@@ -1,3 +1,12 @@
+---
+name: new-feature
+description: Crea una nueva rama feature desde develop siguiendo la metodologia gitflow del proyecto.
+argument-hint: [descripcion-de-la-feature]
+user-invocable: true
+disable-model-invocation: true
+allowed-tools: Bash
+---
+
 # Skill: Crear rama feature (gitflow)
 
 Crea una nueva rama feature siguiendo gitflow para: **$ARGUMENTS**

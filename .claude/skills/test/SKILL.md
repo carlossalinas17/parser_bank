@@ -1,3 +1,12 @@
+---
+name: test
+description: Ejecuta los tests del proyecto de forma inteligente. Soporta tests unitarios, de integracion y con cobertura.
+argument-hint: [--all | --cov | ruta/archivo]
+user-invocable: true
+disable-model-invocation: true
+allowed-tools: Bash, Read, Grep
+---
+
 # Skill: Ejecutar tests
 
 Ejecuta los tests del proyecto segun los argumentos proporcionados: **$ARGUMENTS**

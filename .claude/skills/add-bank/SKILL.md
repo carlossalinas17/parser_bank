@@ -1,3 +1,12 @@
+---
+name: add-bank
+description: Scaffolding completo para agregar soporte de un nuevo banco al parser. Crea parser, keywords, registro y tests siguiendo la arquitectura hexagonal del proyecto.
+argument-hint: [nombre-del-banco]
+user-invocable: true
+disable-model-invocation: false
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash
+---
+
 # Skill: Agregar soporte para un nuevo banco
 
 Vas a agregar soporte completo para el banco: **$ARGUMENTS**

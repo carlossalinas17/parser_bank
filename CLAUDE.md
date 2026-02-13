@@ -100,6 +100,40 @@ make clean       # Limpiar caches
 - **Position-based parsing**: BBVA y Banorte usan coordenadas X/Y de palabras (requiere `include_words=True` en pdfplumber)
 - **Regex-based parsing**: Santander, Scotiabank, VantageBank, HSBC usan regex sobre lineas de texto
 
+## Skills disponibles
+
+El proyecto incluye skills personalizados en `.claude/skills/`. Se invocan escribiendo `/nombre` en el chat de Claude Code.
+
+| Skill | Invocacion | Descripcion |
+|-------|-----------|-------------|
+| **add-bank** | `/add-bank citibanamex` | Scaffold completo para un nuevo banco: parser, keywords, registro y tests. Crea la rama feature automaticamente. |
+| **test** | `/test` | Ejecuta tests unitarios. Acepta `--all` (integracion), `--cov` (cobertura) o una ruta especifica. |
+| **lint** | `/lint` | Ejecuta ruff + mypy. Si hay errores de formato, auto-corrige con `make format`. |
+| **new-feature** | `/new-feature parser-monex` | Crea una rama `feature/{nombre}` desde `develop` siguiendo gitflow. |
+| **pr** | `/pr` | Crea un Pull Request a `develop`: ejecuta verificaciones, genera titulo/descripcion, y lo publica con `gh`. |
+| **parse-test** | `/parse-test Data/5-Mayo/` | Prueba el parser contra un PDF o directorio real y analiza el resultado. |
+
+### Auto-invocacion
+
+Algunos skills se activan automaticamente cuando Claude Code detecta que son relevantes para la tarea:
+
+- **add-bank**: Si pides "agrega soporte para Monex", Claude invoca este skill sin necesidad de escribir `/add-bank`.
+- **parse-test**: Si pides "prueba el parser con este PDF", Claude lo detecta y ejecuta el skill.
+
+Los demas skills tienen `disable-model-invocation: true` porque ejecutan acciones con efectos secundarios (git, PR, formateo). Para usarlos debes invocarlos explicitamente con `/nombre`.
+
+### Ejemplo de flujo completo
+
+```
+/new-feature parser-citibanamex       # Crear rama feature
+/add-bank citibanamex                 # Generar scaffold del banco
+# ... implementar logica de parseo ...
+/parse-test Data/5-Mayo/citi.pdf      # Probar con un PDF real
+/test --all                           # Verificar todos los tests
+/lint                                 # Verificar estilo
+/pr                                   # Crear PR a develop
+```
+
 ## Bancos implementados
 
 BBVA, Banorte, Santander, Scotiabank, VantageBank, HSBC
