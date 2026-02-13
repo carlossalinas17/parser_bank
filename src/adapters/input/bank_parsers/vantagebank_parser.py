@@ -206,12 +206,34 @@ class VantageBankParser(BankParser):
 
         Vantage Bank no incluye el año en cada movimiento (solo MM-DD),
         así que se busca un año 20XX en las primeras líneas del texto.
+
+        TOLERANCIA OCR: Tesseract a veces corrompe el último dígito del año,
+        produciendo "202�" o "202$" en vez de "2025". Si no se encuentra un
+        año completo en el texto, se intenta extraer del nombre del archivo
+        (que sigue la convención "N.- Vantage Bank XXXXXX mes YYYY.pdf").
         """
+        # Intento 1: buscar año completo 20XX en las primeras 30 líneas
         lineas = texto.split("\n")[:30]
         for linea in lineas:
             match = re.search(r"\b(20\d{2})\b", linea)
             if match:
                 return int(match.group(1))
+
+        # Intento 2: buscar año parcial "202" seguido de caracter corrupto OCR
+        # Ejemplo: "May31,202�" → detectar "202" y asumir dígito faltante
+        for linea in lineas:
+            match = re.search(r"\b(20\d)\D", linea)
+            if match:
+                año_parcial = match.group(1)  # "202"
+                # Intentar extraer el dígito faltante del nombre del archivo
+                match_file = re.search(r"(20\d{2})", file_name)
+                if match_file and match_file.group(1).startswith(año_parcial):
+                    return int(match_file.group(1))
+
+        # Intento 3: extraer año directamente del nombre del archivo
+        match_file = re.search(r"\b(20\d{2})\b", file_name)
+        if match_file:
+            return int(match_file.group(1))
 
         raise ParseError(
             "VANTAGE_BANK",
