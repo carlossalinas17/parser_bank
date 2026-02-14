@@ -966,3 +966,91 @@ class TestSantanderDoubledTextCleaning:
         assert resultado.movimientos[1].deposito == Decimal("59114.83")
         assert "RECIBIDO DE BBVA MEXICO" in resultado.movimientos[1].concepto
         assert "EPIFANIO AGUAYO ZAPATA" in resultado.movimientos[1].concepto
+
+    # =================================================================
+    # Bug fixes: page info en conceptos y overflow del último movimiento
+    # =================================================================
+
+    def test_pagina_ocr_corrupta_no_aparece_en_concepto(self, parser):
+        """Líneas con 'P gina19 de23. P-P 42793560' (OCR corrupto) se filtran.
+
+        Bug: el OCR corrompe 'Página' como 'P gina' con espacio, y la línea
+        combinada con 'P-P' no matcheaba ningún noise pattern.
+        """
+        page = self._make_page(
+            [
+                "15-ENE-2025 1234567 PAGO SERVICIO LUZ 1,500.00 120,000.00",
+                "P gina19 de23. P-P 42793560",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+        assert "P gina" not in mov.concepto
+        assert "P-P" not in mov.concepto
+        assert "PAGO SERVICIO LUZ" in mov.concepto
+
+    def test_pp_footer_mitad_de_linea_se_filtra(self, parser):
+        """El footer 'P-P XXXX' que aparece en medio de una línea se filtra."""
+        page = self._make_page(
+            [
+                "10-MAR-2025 9876543 RETIRO ATM 500.00 50,000.00",
+                "SUCURSAL 123 P-P 4500671",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        assert "P-P" not in resultado.movimientos[0].concepto
+
+    def test_total_y_saldo_final_no_contaminan_ultimo_movimiento(self, parser):
+        """Líneas de TOTAL y SALDO FINAL no se anexan al último movimiento.
+
+        Bug: tras el último movimiento, todo el contenido restante de la página
+        (TOTAL, SALDO FINAL, leyendas) se añadía como continuación.
+        """
+        page = self._make_page(
+            [
+                "20-ENE-2025 111222 PAGO NOMINA 5,000.00 115,000.00",
+                "25-ENE-2025 333444 RETIRO VENTANILLA 2,000.00 113,000.00",
+                "TOTAL 7,000.00 2,000.00",
+                "SALDO FINAL DEL PERIODO: 113,000.00",
+                "Significado de abreviaturas utilizadas en el estado de cuenta:",
+                "ABO ABONO (S) DEB DEBITO NO NUMERO",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 2
+        ultimo = resultado.movimientos[1]
+        assert "TOTAL" not in ultimo.concepto
+        assert "SALDO FINAL" not in ultimo.concepto
+        assert "Significado" not in ultimo.concepto
+        assert "RETIRO VENTANILLA" in ultimo.concepto
+
+    def test_ultimo_movimiento_retiro_no_reclasificado_como_deposito(self, parser):
+        """Un retiro no se reclasifica como depósito por contenido TOTAL DEPOSITOS.
+
+        Bug: si las líneas de TOTAL contenían 'DEPOSITO', _detectar_tipo()
+        clasificaba erróneamente el movimiento como depósito.
+        """
+        page = self._make_page(
+            [
+                "28-ENE-2025 555666 PAGO SERVICIO AGUA 800.00 112,200.00",
+                "TOTAL 9,082,076.01 9,100,000.00",
+                "SALDO FINAL DEL PERIODO: 109,450.88",
+                "Detalles de movimientos Dinero Creciente Santander.",
+                "INVERSION CRECIENTE 66-51002073-1",
+            ]
+        )
+        resultado = parser.parse([page], file_name="test.pdf")
+
+        assert len(resultado.movimientos) == 1
+        mov = resultado.movimientos[0]
+        # Debe ser retiro, NO depósito
+        assert mov.retiro == Decimal("800.00")
+        assert mov.deposito == Decimal("0")
+        assert "PAGO SERVICIO AGUA" in mov.concepto
+        assert "TOTAL" not in mov.concepto
+        assert "INVERSION" not in mov.concepto

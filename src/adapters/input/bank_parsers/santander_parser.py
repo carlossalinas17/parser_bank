@@ -87,16 +87,26 @@ class SantanderParser(BankParser):
         re.compile(r"^[Pp][áa]gina\s*\d+", re.IGNORECASE),
         # Santander omite acentos en algunos PDFs: "Pgina 2 de 16"
         re.compile(r"^Pgina\s*\d+", re.IGNORECASE),
+        # OCR corrupto: "P gina19 de23" (espacio entre P y gina)
+        re.compile(r"^P\s+gina\s*\d+", re.IGNORECASE),
         re.compile(r"^\s*-{3,}\s*$"),  # líneas de separación "---"
         re.compile(r"^\d+\s*$"),  # líneas que son solo un número
-        # Footer de Santander: "P-P 4500671"
-        re.compile(r"^P-P\s+\d+"),
+        # Footer de Santander: "P-P 4500671" (puede aparecer en cualquier posición)
+        re.compile(r"P-P\s+\d+"),
         # Headers de tabla que se repiten en cada página
         re.compile(r"^FECHA\s+FOLIO\s+DESCRIPCION"),
         re.compile(r"^ESTADO DE CUENTA"),
         re.compile(r"^Banco Santander"),
         re.compile(r"^Institucin|^Grupo Financiero"),
         re.compile(r"^PRADERAS|^PERIODO DEL|^CODIGO DE CLIENTE"),
+        # Líneas de totales y resumen al final de sección de movimientos
+        re.compile(r"^TOTAL\s", re.IGNORECASE),
+        re.compile(r"SALDO FINAL", re.IGNORECASE),
+        # Sección de abreviaturas y leyendas
+        re.compile(r"Significado de abreviaturas", re.IGNORECASE),
+        re.compile(r"Detalles de movimientos", re.IGNORECASE),
+        # Sub-cuentas / inversiones
+        re.compile(r"INVERSION CRECIENTE", re.IGNORECASE),
     ]
 
     @property
@@ -305,7 +315,7 @@ class SantanderParser(BankParser):
         Returns:
             True si la línea parece ser continuación legítima.
         """
-        return all(not pattern.match(linea) for pattern in self._NOISE_PATTERNS)
+        return all(not pattern.search(linea) for pattern in self._NOISE_PATTERNS)
 
     def _procesar_linea(
         self,
