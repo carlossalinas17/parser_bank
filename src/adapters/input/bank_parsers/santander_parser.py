@@ -83,12 +83,13 @@ class SantanderParser(BankParser):
     # Patrones de líneas que NO son continuación de descripción.
     # Son ruido de encabezados, pies de página o separadores que
     # podrían aparecer entre movimientos en el PDF.
+    # Ruido de encabezados y pies de página que se intercala entre movimientos.
+    # Estas líneas se SALTAN pero NO cierran el bloque de continuación actual,
+    # porque pueden aparecer entre un movimiento y sus líneas de continuación
+    # legítimas (ej: un header de página entre el SPEI y su remitente).
     _NOISE_PATTERNS: list[re.Pattern[str]] = [
-        re.compile(r"^[Pp][áa]gina\s*\d+", re.IGNORECASE),
-        # Santander omite acentos en algunos PDFs: "Pgina 2 de 16"
-        re.compile(r"^Pgina\s*\d+", re.IGNORECASE),
-        # OCR corrupto: "P gina19 de23" (espacio entre P y gina)
-        re.compile(r"^P\s+gina\s*\d+", re.IGNORECASE),
+        # "Página X de Y" en cualquier variante OCR (sin ancla para search())
+        re.compile(r"P[áa\s]*gina\s*\d+\s*de\s*\d+", re.IGNORECASE),
         re.compile(r"^\s*-{3,}\s*$"),  # líneas de separación "---"
         re.compile(r"^\d+\s*$"),  # líneas que son solo un número
         # Footer de Santander: "P-P 4500671" (puede aparecer en cualquier posición)
@@ -99,14 +100,34 @@ class SantanderParser(BankParser):
         re.compile(r"^Banco Santander"),
         re.compile(r"^Institucin|^Grupo Financiero"),
         re.compile(r"^PRADERAS|^PERIODO DEL|^CODIGO DE CLIENTE"),
-        # Líneas de totales y resumen al final de sección de movimientos
+    ]
+
+    # Marcadores de fin de sección de movimientos.
+    # Cuando se detecta uno de estos, se CIERRA el bloque actual:
+    # no se recopilan más líneas de continuación hasta el siguiente movimiento.
+    # Esto evita que contenido posterior (totales, abreviaturas, info fiscal,
+    # UUIDs, fechas de expedición) contamine el último movimiento.
+    _SECTION_END_PATTERNS: list[re.Pattern[str]] = [
+        # Totales y resumen
         re.compile(r"^TOTAL\s", re.IGNORECASE),
         re.compile(r"SALDO FINAL", re.IGNORECASE),
         # Sección de abreviaturas y leyendas
         re.compile(r"Significado de abreviaturas", re.IGNORECASE),
+        re.compile(r"^ABO\s+ABONO", re.IGNORECASE),
+        re.compile(r"^ANUL\s+ANULACION", re.IGNORECASE),
+        re.compile(r"^ANT\s+ANTICIPO", re.IGNORECASE),
+        re.compile(r"^ANTICIP\s+ANTICIPADO", re.IGNORECASE),
+        re.compile(r"^ASEG\s+ASEGURAMIENTO", re.IGNORECASE),
+        re.compile(r"^AUT\s+AUTOMATICO", re.IGNORECASE),
         re.compile(r"Detalles de movimientos", re.IGNORECASE),
         # Sub-cuentas / inversiones
         re.compile(r"INVERSION CRECIENTE", re.IGNORECASE),
+        # Sección de información fiscal
+        re.compile(r"Informaci.n\s+fiscal", re.IGNORECASE),
+        re.compile(r"UUID\s+DEL\s+TIMBRADO", re.IGNORECASE),
+        re.compile(r"NUM.*CERTIFICADO.*(EMISOR|SAT)", re.IGNORECASE),
+        re.compile(r"FOLIO\s+INTERNO", re.IGNORECASE),
+        re.compile(r"FECHA\s+Y\s+HORA\s+DE\s+EXPEDICION", re.IGNORECASE),
     ]
 
     @property
@@ -250,8 +271,14 @@ class SantanderParser(BankParser):
         for page in pages:
             # last_match guarda el match de la línea de fecha actual.
             # continuation_lines acumula las líneas de continuación.
+            # block_closed: cuando se detecta una línea de ruido (pie de página,
+            # totales, abreviaturas, info fiscal), se deja de recopilar
+            # continuaciones para el bloque actual. Esto evita que líneas
+            # posteriores al ruido (ej: UUIDs, fechas fiscales) se anexen
+            # al concepto del movimiento.
             last_match: re.Match[str] | None = None
             continuation_lines: list[str] = []
+            block_closed: bool = False
 
             for linea in page.lines:
                 linea = linea.strip()
@@ -281,10 +308,15 @@ class SantanderParser(BankParser):
                     # Iniciar nuevo bloque
                     last_match = match
                     continuation_lines = []
+                    block_closed = False
                 else:
                     # No es movimiento nuevo → ¿es continuación válida?
-                    if last_match is not None and self._es_linea_continuacion(linea):
-                        continuation_lines.append(linea)
+                    if last_match is not None and not block_closed:
+                        if self._es_fin_de_seccion(linea):
+                            # Marcador de fin de sección: cerrar el bloque.
+                            block_closed = True
+                        elif self._es_linea_continuacion(linea):
+                            continuation_lines.append(linea)
 
             # Procesar el último movimiento de la página
             # (no hay siguiente match que lo "cierre")
@@ -298,16 +330,9 @@ class SantanderParser(BankParser):
     def _es_linea_continuacion(self, linea: str) -> bool:
         """Determina si una línea es continuación de la descripción anterior.
 
-        Filtra ruido que podría aparecer entre movimientos:
-        - "Página X de Y" (pies de página)
-        - Líneas de separación ("---")
-        - Líneas que son solo números
-
-        ¿Por qué no ser más restrictivo? Porque las líneas de continuación
-        de Santander son muy variadas (remitente, cuenta, clave de rastreo,
-        RFC, concepto libre, etc.) y un filtro demasiado estricto perdería
-        información valiosa. Es mejor incluir una línea de más que perder
-        datos del movimiento.
+        Filtra ruido de encabezados/pies de página que se intercala entre
+        movimientos (ej: "Página X de Y", separadores "---").
+        Estas líneas se saltan sin cerrar el bloque de continuación.
 
         Args:
             linea: Línea de texto ya stripped.
@@ -316,6 +341,23 @@ class SantanderParser(BankParser):
             True si la línea parece ser continuación legítima.
         """
         return all(not pattern.search(linea) for pattern in self._NOISE_PATTERNS)
+
+    def _es_fin_de_seccion(self, linea: str) -> bool:
+        """Detecta marcadores de fin de sección de movimientos.
+
+        A diferencia de _es_linea_continuacion (que solo salta la línea),
+        este método CIERRA el bloque actual: no se recopilan más
+        continuaciones hasta el siguiente movimiento.
+
+        Detecta: TOTAL, SALDO FINAL, abreviaturas, info fiscal, etc.
+
+        Args:
+            linea: Línea de texto ya stripped.
+
+        Returns:
+            True si la línea marca el fin de la sección de movimientos.
+        """
+        return any(pattern.search(linea) for pattern in self._SECTION_END_PATTERNS)
 
     def _procesar_linea(
         self,
